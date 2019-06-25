@@ -1,0 +1,10 @@
+---
+- data: services[]
+  slide: normal/2
+
+--- 
+services:
+- name: foobar
+  detailt: lorem ipsum foo vitae nor ilicium
+- name: bazz 2
+  detailt: lorem ipsum foo vitae nor ilicium

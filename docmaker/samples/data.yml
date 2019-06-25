@@ -1,0 +1,19 @@
+---
+pets:
+- name: Harry
+  type: Dog
+  food:
+  - sausages
+  - kibble
+- name: Yellow
+  type: bird
+  food:
+  - seed
+  - corn
+  - cuttlefish
+- name: Fudge
+  type: dog
+  food:
+  - sausages
+  - kibble
+  - bacon

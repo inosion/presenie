@@ -1,5 +1,8 @@
+.DS_Store
 **/out/*
 **/target/*
 .bloop
 .metals
 .~lock*
+mill.*
+assets/standards/*

@@ -15,39 +15,52 @@ import org.openxmlformats.schemas.drawingml.x2006.main.CTTableRow
 import io.gatling.jsonpath.JsonPath
 
 import scala.util._
-
+import scala.collection.mutable
+import org.apache.poi.sl.usermodel.PictureData.PictureType
+import java.awt.geom.Rectangle2D
+import com.typesafe.scalalogging._
 //import org.openxmlformats.schemas.presentationml.x2006.main.
 
-object PPTXMerger { 
+
+object ShapeGroup extends Enumeration  {
+  type ShapeGroup = Value
+  val Image = Value
+}
+
+object PPTXMerger extends StrictLogging {
     type TextHolder = TextShape[XSLFShape, XSLFTextParagraph]
 
     import scala.reflect.ClassTag
 
     def f[T](v: T)(implicit ev: ClassTag[T]) = ev.toString
 
-    val JsonPathReg                   = raw"[\$$@]|[\$$@]\.[0-9A-Za-z\?\.\[\]\*]+"
+    val JsonPathReg                   = raw"[\$$@]|[\$$@]\.[0-9A-Za-z_:\-\?\.\[\]\*]+"
     val matchRegexpTemplate           = raw".*(\{\{\s*(" + JsonPathReg + raw")\s*\}\}).*"
-    val matchContextControl             = (raw"(\{\s*context\s*=\s*(" + JsonPathReg + raw")\s*\})").r
-    val matchGroupShapeControl        = (raw"(\{\s*context\s*=\s*(" + JsonPathReg + raw")\s*\})").r    
+    val matchContextControl           = (raw"(\{\s*context\s*=\s*(" + JsonPathReg + raw")\s*\})").r
+    val matchGroupShapeControl        = (raw"(\{\s*context\s*=\s*(" + JsonPathReg + raw")\s*dir\s*=\s*(\d+)\s+gap=(\d+)\s*\})").r
 
-    def render(config: File, data: File, template: File, outFile: File): Either[Error, Unit] = {
+    def render(data: File, template: File, outFile: File): Either[Error, Unit] = {
 
-        println(matchRegexpTemplate)
+        // we need to track which SlideLayouts we ported across
+        val visitedLayouts: mutable.Seq[XSLFSlideLayout] = mutable.Seq()
+        logger.debug(s"! Regexp for templates = ${matchRegexpTemplate}")
+        logger.debug(s"! Regexp for controls = ${matchContextControl}")
+        logger.debug(s"! Regexp for group shape controls = ${matchGroupShapeControl}")
 
         val pptTemplate: XMLSlideShow = new XMLSlideShow(new FileInputStream(template.getAbsolutePath()))
         val pptNew: XMLSlideShow      = new XMLSlideShow(new FileInputStream(template.getAbsolutePath()))
-        
+
         // fastest way to clone the sheet I can see is copy it, then remove all slides
         // to retain the master slide layouts.
-        for (idx <- 0 until pptNew.getSlides.size()) { 
+        for (idx <- 0 until pptNew.getSlides.size()) {
+            logger.debug(s"√ Removing slide ${prettyPrintSlide(pptNew.getSlides().get(0))}")
             pptNew.removeSlide(0)
-            System.out.println(s"removed $idx")
         }
 
         val jsonData = JsonYamlTools.readFileToJson(data)
 
         for (srcSlide <- pptTemplate.getSlides().asScala) {
-            processSlide(template.getPath(), outFile.getPath, srcSlide, pptNew, jsonData, None)
+            processSlide(template.getPath(), outFile.getPath, srcSlide, pptNew, jsonData, None, visitedLayouts)
         }
 
         pptNew.write(new FileOutputStream(outFile))
@@ -56,23 +69,27 @@ object PPTXMerger {
 
     }
 
-    def processSlide(srcPath: String, destPath: String, srcSlide: XSLFSlide, pptNew: XMLSlideShow, rootJsonNode: JsonNode, contextJsonNode: Option[JsonNode]) {
+    def prettyPrintSlide(slide: XSLFSlide): String = {
+        List(Option(slide.getSlideName()), Some(s"#${slide.getSlideNumber()}")).flatten.mkString("/")
+    }
 
+    def prettyPrintShape(shape: XSLFShape): String = shape.getShapeName()
+
+
+    def processSlide(srcPath: String, destPath: String, srcSlide: XSLFSlide, pptNew: XMLSlideShow, rootJsonNode: JsonNode, contextJsonNode: Option[JsonNode], visitedLayouts: mutable.Seq[XSLFSlideLayout]) {
 
         // We will copy this slide from source to new ppt, then fill it's data
-        pptNew.createSlide().importContent(srcSlide)
-        val newSlide = pptNew.getSlides().get(pptNew.getSlides().size() - 1)
-        System.err.println(s":: Cloning from src [${srcPath}(${srcSlide.getSlideNumber()})] to [${destPath}(${newSlide.getSlideNumber()})] ")
+        val newSlide = PPTXTools.createSlide(pptNew, srcSlide, visitedLayouts)
+        System.err.println(s":: Cloned from src [${srcPath}(${srcSlide.getSlideNumber()})] to [${destPath}(${newSlide.getSlideNumber()})] ")
 
-
-        findSlideIterator(newSlide) match {
-            case Some(jsonPath) => {
-                System.out.println(s"! found a jsonPath context ${jsonPath}")
-                JsonPath.query(jsonPath, rootJsonNode).map{ i => 
+        findControlJsonPath(newSlide.getShapes().asScala) match {
+            case Some(PageControlData(shape, contextMatch, jsonPath)) => {
+                logger.debug(s"√ Slide [${prettyPrintSlide(newSlide)}] has a jsonPath context -> ${jsonPath}")
+                newSlide.removeShape(shape)
+                JsonPath.query(jsonPath, rootJsonNode).map{ i =>
                     for (jsonNode <- i) {
-                        System.out.println(s"! node = ${jsonNode.toString()}")
-
-                        processSlide(srcPath, destPath, newSlide, pptNew, rootJsonNode, Some(jsonNode))
+                        logger.debug(s"√ node = ${jsonNode.toString()}")
+                        processSlide(srcPath, destPath, newSlide, pptNew, rootJsonNode, Some(jsonNode), visitedLayouts)
                     }
                 }
                 // now we have templated it out, let's remove it
@@ -87,23 +104,45 @@ object PPTXMerger {
 
         for (shape <- slide.getShapes().asScala) {
 
-            shape match { 
+            shape match {
                 case textShape : TextHolder =>
                     if (hasTemplate(textShape)) {
-                      System.out.println(s":: ${f(shape)} is a templated shape")
+                      logger.debug(s"√ ${f(shape)} is a templated shape")
                       changeText(textShape, rootJsonNode, contextJsonNode)
-                    } else { 
-                      System.out.println(s"!! '${textShape.getText()}' did not match")
+                    } else {
+                      logger.debug(s"✖ '${textShape.getText()}' did not match")
                     }
-                
-                case group : XSLFGroupShape => System.out.println(s":: Group Shape")
+
+                case group : XSLFGroupShape => processGroupShape(group)
                 case table : XSLFTable  if (hasControl(table.getRows().get(0).getCells().get(0)))    => {
-                    System.out.println(s":: we have a table - ${table.getRows().get(0).getCells().get(0).getText()}")
+                    logger.debug(s"√ we have a table - ${table.getRows().get(0).getCells().get(0).getText()}")
                     iterateTable(table, rootJsonNode, contextJsonNode)
                 }
-                case _ => System.out.println(s"\n:: ${f(shape)} is not TextHolder")
+                case _ => logger.debug(s"✖ ${f(shape)} is not TextHolder")
             }
-            
+
+        }
+    }
+
+    def processGroupShape(groupShape: XSLFGroupShape) {
+        logger.debug(s"⸮ Inspecting XSLFGroupShape[${groupShape.getShapeName()}]...")
+        findControlJsonPath(groupShape.getShapes().asScala) match {
+            case None => logger.debug(s"✖ XSLFGroupShape[${groupShape.getShapeName()}] - no control, ignoring")
+            case Some(GroupShapeControlData(shape, controlMatch, jsonPath, direction, gap)) => {
+                logger.debug(s"√ Found the XSLFGroupShape[${groupShape.getShapeName()}] with control fields")
+                val newGroupShape: XSLFGroupShape = groupShape.getSheet().createGroup()
+                newGroupShape.setAnchor(groupShape.getAnchor())
+
+                for (shape <- groupShape.getShapes().asScala) {
+                    shape match {
+                        case s: XSLFAutoShape => logger.debug("not impl yet") // newGroupShape.createAutoShape()
+                        case t: XSLFTextBox   => newGroupShape.createTextBox().setText(t.getText())
+                        case _ => logger.error(s"The group ${prettyPrintShape(groupShape)} has a shape ${prettyPrintShape(shape)} that did not match")
+                    }
+
+                }
+                // nned to remove it on the outer /// groupShape.removeShape(shape)
+            }
         }
     }
 
@@ -116,9 +155,9 @@ object PPTXMerger {
 
         val (jsonNode, _tableContextJsonPath) = nodeAndQuery(tableContextJsonPath, rootJsonNode, contextJsonNode)
 
-        JsonPath.query(_tableContextJsonPath, jsonNode).map{ iter => 
+        JsonPath.query(_tableContextJsonPath, jsonNode).map{ iter =>
             for ((jsonNode, i) <- iter.zipWithIndex) {
-                System.out.println(s"! Table node = ${jsonNode.toString()}")
+                logger.debug(s"√ Table node = ${jsonNode.toString()}")
                 RowCloner.cloneRow(table, 1) // including cells
                 for ((cell, ci) <- table.getRows().get(table.getRows().size() - 1).getCells().asScala.zipWithIndex) {
                     cell.setText(replaceText(rootJsonNode, jsonNode, cell.getText()))
@@ -132,30 +171,30 @@ object PPTXMerger {
         // remove the context string
         table.getRows().get(0).getCells().get(0).setText(firstCellText.replace(controlString, ""))
 
-    
+
     }
-    
+
     def changeText(textShape: TextHolder, rootJsonNode: JsonNode, contextJsonNode: Option[JsonNode]) {
         val text = textShape.getText()
         val matchRegexpTemplate.r(replacingText, jsonQuery) = text
 
-        System.out.println(s"found = [${replacingText}] jsonpath = [${jsonQuery}]")
+        logger.debug(s"√ found = [${replacingText}] jsonpath = [${jsonQuery}]")
 
         val (theJsonNode, theJsonPath) = nodeAndQuery(jsonQuery, rootJsonNode, contextJsonNode)
 
-        val dataText = JsonPath.query(theJsonPath, theJsonNode) match { 
+        val dataText = JsonPath.query(theJsonPath, theJsonNode) match {
             case Left(error) => throw new java.lang.Error(error.reason)
-            case Right(i)    => try { 
+            case Right(i)    => try {
                 Some(i.next().asText())
-            } catch { 
-                case e: java.util.NoSuchElementException => System.err.println(s"The JSONPath expression ==> ${theJsonPath} <== did not resolve to any data. Ignoring"); None
+            } catch {
+                case e: java.util.NoSuchElementException => logger.error(s"The JSONPath expression ==> ${theJsonPath} <== did not resolve to any data. Ignoring"); None
                 case e: Exception => throw e
             }
         }
 
         dataText.map { txt =>
             val newText = text.replace(replacingText, txt)
-            System.out.println(s"dataText = [${txt}] newText = [${newText}]")
+            logger.debug(s"√ dataText = [${txt}] newText = [${newText}]")
             textShape.setText(newText)
         }
     }
@@ -167,11 +206,11 @@ object PPTXMerger {
 
         val (jsonNode, jsonPath) = nodeAndQuery(jsonQuery, rootJsonNode, Some(contextJsonNode))
 
-        val dataText = JsonPath.query(jsonPath, jsonNode) match { 
+        val dataText = JsonPath.query(jsonPath, jsonNode) match {
             case Left(error) => throw new java.lang.Error(error.reason)
-            case Right(i)    => try { 
+            case Right(i)    => try {
                 Some(i.next().asText())
-            } catch { 
+            } catch {
                 case e: java.util.NoSuchElementException => System.err.println(s"The JSONPath expression ==> ${jsonQuery} <== did not resolve to any data. Ignoring"); None
                 case e: Exception => throw e
             }
@@ -185,7 +224,7 @@ object PPTXMerger {
      * Given a JSONPath query ($. or @.) we will determine
      * if it is to use the context node [@.], or the rootnode [$.]
      * for the lookup
-     * 
+     *
      * ! This is a hack because the io.gatling.JsonPath does not support a context object.
      */
     def nodeAndQuery(jsonQuery: String, rootJsonNode: JsonNode, contextJsonNode: Option[JsonNode]): (JsonNode, String) = {
@@ -194,31 +233,78 @@ object PPTXMerger {
             case '@' => contextJsonNode match {
                             case Some(jn) => (jn, "$" + jsonQuery.stripPrefix("@"))
                             case None     => {
-                                System.err.println("Not Context object. Using root instead")
+                                val newJsonPath = "$" + jsonQuery.stripPrefix("@")
+                                logger.warn(s"! jsonPath starts is ${jsonQuery} but the context object is empty. Using root object instead (eg: ${newJsonPath})")
                                 (rootJsonNode, "$" + jsonQuery.stripPrefix("@"))
-                            }  
+                            }
                         }
         }
     }
 
-    // has side affect of removing the control 
-    def findSlideIterator(currentSlide: XSLFSlide): Option[String] = {
+    def addImage(ppt: XMLSlideShow, slide: XSLFSlide, imagePath: String, imageShapeName: String, shape: XSLFShape, pictureType: PictureType) {
 
-        for (shape <- currentSlide.getShapes().asScala) {
+        val picIS: FileInputStream = new FileInputStream(new File(imagePath))
+        // https://stackoverflow.com/questions/4905393/scala-inputstream-to-arraybyte commons-io still the best
+        val picture: Array[Byte]       = org.apache.commons.io.IOUtils.toByteArray(picIS)
+
+        val anchor: Rectangle2D = shape.getAnchor()
+        slide.removeShape(shape)
+
+        val pd: XSLFPictureData    = ppt.addPicture(picture, pictureType)
+        val pics: XSLFPictureShape = slide.createPicture(pd)
+        pics.setAnchor(anchor)
+
+    }
+
+    trait ControlData {
+        // the shape that holds the matching control string (for removal by caller)
+        def shape: XSLFShape
+        // the string that matched
+        def controlText: String
+        // the jsonPath
+        def jsonPath: String
+    }
+    case class PageControlData(shape: XSLFShape, controlText: String, jsonPath: String) extends ControlData
+    case class GroupShapeControlData(shape: XSLFShape, controlText: String, jsonPath: String, direction: Int, gap: Int) extends ControlData
+    case class ImageControlData(shape: XSLFShape, controlText: String, jsonPath: String) extends ControlData
+
+
+    def findControlJsonPath(shapes: scala.collection.mutable.Seq[XSLFShape]): Option[ControlData] = {
+
+        for (shape <- shapes) {
             if (shape.isInstanceOf[TextHolder]) {
                 val textShape = shape.asInstanceOf[TextHolder]
-                if (hasControl(textShape)) {
-                    val jsonPath = for (m <- matchContextControl.findFirstMatchIn(textShape.getText())) yield m.group(2)
-                    currentSlide.removeShape(shape)
-                    return jsonPath
+                logger.debug(s"⸮ inspecting - Shape[${shape.getShapeName()}] `${textShape.getText()}`")
+                textShape.getText() match {
+                    case matchContextControl(controlText, jsonPath) => { // page control
+                        logger.debug(s"√ Match - Shape[${shape.getShapeName()}] control=`${controlText}` jp=`${jsonPath}`")
+                        return Some(PageControlData(shape, controlText, jsonPath))
+                    }
+                    case matchGroupShapeControl(controlText, jsonPath, direction, gap) => {
+                        logger.debug(s"√ Match - Shape[${shape.getShapeName()}] control=`${controlText}` jp=`${jsonPath}` dir=${direction} gap=${gap}")
+                        return Some(GroupShapeControlData(shape, controlText, jsonPath, direction.toInt, gap.toInt))
+                    }
+                    case _ => {
+                        logger.debug(s"✖ shape:${shape.getShapeName()} did not have a controlData")
+
+                    }
                 }
-            } 
+            }
         }
         None
+    }
 
-    }    
+    def getShape(slide: XSLFSlide, shapeName: String): Option[XSLFShape] = {
+        for (shape <- slide.getSlideLayout().getShapes().asScala) {
+            shape.getShapeName().toLowerCase() match {
+              case shapeName => return Some(shape)
+              case _ =>
+            }
+        }
+        return None;
+    }
 
-    def hasTemplate(shape: TextHolder): Boolean = 
+    def hasTemplate(shape: TextHolder): Boolean =
       shape.getText().matches(matchRegexpTemplate)
 
     def hasControl(shape: TextHolder): Boolean = matchContextControl.findFirstIn(shape.getText()).isDefined

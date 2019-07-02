@@ -1,4 +1,4 @@
-package org.apache.poi.xslf.usermodel 
+package org.apache.poi.xslf.usermodel
 
 
 import org.apache.poi.sl.usermodel._
@@ -23,12 +23,12 @@ object RowCloner {
                  cell.setFillColor(oldCell.getFillColor())
 
                  for (beType <- List(TableCell.BorderEdge.bottom, TableCell.BorderEdge.top, TableCell.BorderEdge.right, TableCell.BorderEdge.left)) {
-                  //  cell.setBorderCap(     beType,    oldCell.getBorderCap(beType))
-                    cell.setBorderColor(   beType,    oldCell.getBorderColor(beType))
+                   //  cell.setBorderCap(     beType,    oldCell.getBorderCap(beType))
+                   if(oldCell.getBorderColor(beType) != null) cell.setBorderColor(   beType,    oldCell.getBorderColor(beType))
                    // cell.setBorderCompound(beType,    oldCell.getBorderCompound(beType))
-                 //   cell.setBorderDash(    beType,    oldCell.getBorderDash(beType))                    
-                    cell.setBorderStyle(   beType,    oldCell.getBorderStyle(beType))                                        
-                    cell.setBorderWidth(   beType,    oldCell.getBorderWidth(beType))                                                            
+                   //   cell.setBorderDash(    beType,    oldCell.getBorderDash(beType))
+                   if(oldCell.getBorderStyle(beType) != null) cell.setBorderStyle(   beType,    oldCell.getBorderStyle(beType))
+                   if(oldCell.getBorderWidth(beType) != null) cell.setBorderWidth(   beType,    oldCell.getBorderWidth(beType))
                  }
 
                  cell.getTextParagraphs().get(0).getTextRuns().get(0).setFontSize(cell.getTextParagraphs().get(0).getTextRuns().get(0).getFontSize())
@@ -37,12 +37,12 @@ object RowCloner {
         } catch {
             //case e: XmlException => e.printStackTrace()
             //case e: IOException  => e.printStackTrace()
-            case e: Exception  => { 
+            case e: Exception  => {
                 e.printStackTrace()
             }
         }
 
-    } 
+    }
 
     def cloneRow2(table: XSLFTable, rowId: Int) {
 
@@ -56,7 +56,7 @@ object RowCloner {
           val newCell: XSLFTableCell = newRow.addCell()
           val oldCell = oldRow.getCells().get(x)
 
-          // clone all paragraphs in this cell 
+          // clone all paragraphs in this cell
           for (p <- oldCell.getTextParagraphs().asScala) {
             val para: XSLFTextParagraph = newCell.addNewTextParagraph();
             para.setTextAlign(p.getTextAlign())
@@ -66,7 +66,7 @@ object RowCloner {
                 r1.setText(t.getRawText());
                 r1.setFontColor(t.getFontColor());
                 r1.setFontSize(t.getFontSize());
-                r1.setFontFamily(t.getFontFamily())                
+                r1.setFontFamily(t.getFontFamily())
             }
           }
         }

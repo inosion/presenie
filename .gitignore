@@ -1,5 +1,11 @@
+.DS_Store
 **/out/*
 **/target/*
 .bloop
 .metals
+.idea
+.idea_modules
 .~lock*
+mill.*
+assets/standards/*
+README.md.localised

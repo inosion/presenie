@@ -1,8 +1,8 @@
 package inosion.pptx
 
-import org.apache.poi.xslf.usermodel._ // XMLSlideShow & friends
 import java.io.File
 
+/*
 trait ControlData {
     // the shape that holds the matching control string (for removal by caller)
     def shape: XSLFShape
@@ -15,6 +15,7 @@ case class PageControlData(shape: XSLFTextShape, controlText: String, jsonPath: 
 case class GroupShapeControlData(shape: XSLFTextShape, controlText: String, jsonPath: String, direction: Double, gap: Double) extends ControlData
 case class ImageControlData(shape: XSLFTextShape, controlText: String, jsonPath: String) extends ControlData
 
+*/
 
 case class FilesContext(src: File, dst: File, data: File) {
     def srcRelPath = src.getPath()
@@ -25,4 +26,6 @@ case class FilesContext(src: File, dst: File, data: File) {
     def dataAbsPath = data.getAbsolutePath()
 }
 
+/*
 case class SlidesContext(srcSlide: XSLFSlide, destPptx: XMLSlideShow, destSlides: Seq[XSLFSlide])
+*/

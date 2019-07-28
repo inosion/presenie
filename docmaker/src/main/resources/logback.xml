@@ -6,7 +6,12 @@
         </encoder>
     </appender>
 
-<!-->
+
+    <!-- <appender name="Suppress" class="org.docx4j.openpackaging"/> -->
+    <logger name="org.docx4j" level="WARN"/>
+    <logger name="org.pptx4j" level="WARN"/>
+
+    <!-->
     <logger name="inosion" level="debug" additivity="false">
         <appender-ref ref="CONSOLE"/>
     </logger>
@@ -15,5 +20,6 @@
     <root level="debug">
         <appender-ref ref="CONSOLE"/>
     </root>
+
 
 </configuration>

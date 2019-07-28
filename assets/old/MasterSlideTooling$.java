@@ -1,7 +1,4 @@
-
-package org.apache.poi.xslf.usermodel
-
-import org.apache.poi.xslf.usermodel._
+package main.scala.inosion.pptx;
 
 object MasterSlideTooling {
 

@@ -1,4 +1,4 @@
-package inosion.pptx
+package inosion.presenie.pptx
 
 
 import org.apache.poi.xslf.usermodel._ // XMLSlideShow
@@ -6,13 +6,15 @@ import org.apache.poi.sl.usermodel._
 import java.io.File
 import java.io._
 
-import scala.collection.JavaConverters._
-import com.fasterxml.jackson.databind.JsonNode
+// import scala.collection.JavaConverters._
+import scala.jdk.CollectionConverters._
 
 
 import org.openxmlformats.schemas.drawingml.x2006.main.CTTableRow
 
-import io.gatling.jsonpath.JsonPath
+import com.filippodeluca.jsonpath.parser.JsonPathParser
+import com.filippodeluca.jsonpath.circe.CirceSolver
+import io.circe.Json
 
 import scala.util._
 import scala.collection.mutable
@@ -57,7 +59,11 @@ object PPTXMerger extends StrictLogging {
             pptNew.removeSlide(0)
         }
 
-        val jsonData = JsonYamlTools.readFileToJson(data)
+        val jsonData = JsonYamlTools.readFileToJson(data) match {
+            case Right(a) => a
+            case Left(e) => throw e
+        }
+
 
         for (srcSlide <- pptTemplate.getSlides().asScala) {
             processSlide(template.getPath(), outFile.getPath, srcSlide, pptNew, jsonData, None, visitedLayouts)
@@ -76,7 +82,7 @@ object PPTXMerger extends StrictLogging {
     def prettyPrintShape(shape: XSLFShape): String = shape.getShapeName()
 
 
-    def processSlide(srcPath: String, destPath: String, srcSlide: XSLFSlide, pptNew: XMLSlideShow, rootJsonNode: JsonNode, contextJsonNode: Option[JsonNode], visitedLayouts: mutable.Seq[XSLFSlideLayout]) {
+    def processSlide(srcPath: String, destPath: String, srcSlide: XSLFSlide, pptNew: XMLSlideShow, rootJson: Json, contextJson: Option[Json], visitedLayouts: mutable.Seq[XSLFSlideLayout]) : Unit = {
 
         // We will copy this slide from source to new ppt, then fill it's data
         val newSlide = PPTXTools.createSlide(pptNew, srcSlide, visitedLayouts)
@@ -86,21 +92,27 @@ object PPTXMerger extends StrictLogging {
             case Some(PageControlData(shape, contextMatch, jsonPath)) => {
                 logger.debug(s"√ Slide [${prettyPrintSlide(newSlide)}] has a jsonPath context -> ${jsonPath}")
                 newSlide.removeShape(shape)
-                JsonPath.query(jsonPath, rootJsonNode).map{ i =>
-                    for (jsonNode <- i) {
+
+                val result = JsonPathParser.parse(jsonPath).map { jp =>
+                    CirceSolver.solve(jp, rootJson)
+                }
+
+                result.map{ iter =>
+                    for ((jsonNode, i) <- iter.zipWithIndex) {
                         logger.debug(s"√ node = ${jsonNode.toString()}")
-                        processSlide(srcPath, destPath, newSlide, pptNew, rootJsonNode, Some(jsonNode), visitedLayouts)
+                        processSlide(srcPath, destPath, newSlide, pptNew, rootJson, Some(jsonNode), visitedLayouts)
                     }
                 }
                 // now we have templated it out, let's remove it
                 pptNew.removeSlide(newSlide.getSlideNumber() - 1)
             }
-            case None => processAllShapes(newSlide, rootJsonNode, contextJsonNode)
+            case Some(_) => logger.error(s"! Slide [${prettyPrintSlide(newSlide)}] has a control but it is not a PageControlData")
+            case None => processAllShapes(newSlide, rootJson, contextJson)
         }
 
     }
 
-    def processAllShapes(slide: XSLFSlide,  rootJsonNode: JsonNode, contextJsonNode: Option[JsonNode]) {
+    def processAllShapes(slide: XSLFSlide,  rootJson: Json, contextJson: Option[Json]) : Unit = {
 
         for (shape <- slide.getShapes().asScala) {
 
@@ -108,7 +120,7 @@ object PPTXMerger extends StrictLogging {
                 case textShape : TextHolder =>
                     if (hasTemplate(textShape)) {
                       logger.debug(s"√ ${f(shape)} is a templated shape")
-                      changeText(textShape, rootJsonNode, contextJsonNode)
+                      changeText(textShape, rootJson, contextJson)
                     } else {
                       logger.debug(s"✖ '${textShape.getText()}' did not match")
                     }
@@ -116,7 +128,7 @@ object PPTXMerger extends StrictLogging {
                 case group : XSLFGroupShape => processGroupShape(group)
                 case table : XSLFTable  if (hasControl(table.getRows().get(0).getCells().get(0)))    => {
                     logger.debug(s"√ we have a table - ${table.getRows().get(0).getCells().get(0).getText()}")
-                    iterateTable(table, rootJsonNode, contextJsonNode)
+                    iterateTable(table, rootJson, contextJson)
                 }
                 case _ => logger.debug(s"✖ ${f(shape)} is not TextHolder")
             }
@@ -124,7 +136,7 @@ object PPTXMerger extends StrictLogging {
         }
     }
 
-    def processGroupShape(groupShape: XSLFGroupShape) {
+    def processGroupShape(groupShape: XSLFGroupShape) : Unit = {
         logger.debug(s"⸮ Inspecting XSLFGroupShape[${groupShape.getShapeName()}]...")
         findControlJsonPath(groupShape.getShapes().asScala) match {
             case None => logger.debug(s"✖ XSLFGroupShape[${groupShape.getShapeName()}] - no control, ignoring")
@@ -146,21 +158,27 @@ object PPTXMerger extends StrictLogging {
         }
     }
 
-    def iterateTable(table: XSLFTable, rootJsonNode: JsonNode, contextJsonNode: Option[JsonNode]) {
+    def iterateTable(table: XSLFTable, rootJson: Json, contextJson: Option[Json]) : Unit = {
         val firstCellText = table.getRows().get(0).getCells().get(0).getText()
         // val (a, b, tableContextJsonPath) = for (m <- matchContextControl.findFirstMatchIn(firstCellText)) yield m.group
         val mm = for (m <- matchContextControl.findFirstMatchIn(firstCellText)) yield m
         val tableContextJsonPath = mm.get.group(2)
         val controlString = mm.get.group(0)
 
-        val (jsonNode, _tableContextJsonPath) = nodeAndQuery(tableContextJsonPath, rootJsonNode, contextJsonNode)
+        val (jsonNode, _tableContextJsonPath) = nodeAndQuery(tableContextJsonPath, rootJson, contextJson)
 
-        JsonPath.query(_tableContextJsonPath, jsonNode).map{ iter =>
+
+        val jpResult = JsonPathParser.parse(_tableContextJsonPath).map { jp =>
+            CirceSolver.solve(jp, jsonNode)
+        }
+
+
+        jpResult.map{ iter =>
             for ((jsonNode, i) <- iter.zipWithIndex) {
                 logger.debug(s"√ Table node = ${jsonNode.toString()}")
                 RowCloner.cloneRow(table, 1) // including cells
                 for ((cell, ci) <- table.getRows().get(table.getRows().size() - 1).getCells().asScala.zipWithIndex) {
-                    cell.setText(replaceText(rootJsonNode, jsonNode, cell.getText()))
+                    cell.setText(replaceText(rootJson, jsonNode, cell.getText()))
                     cell.setStrokeStyle(cell.getStrokeStyle())
                 }
             }
@@ -174,49 +192,53 @@ object PPTXMerger extends StrictLogging {
 
     }
 
-    def changeText(textShape: TextHolder, rootJsonNode: JsonNode, contextJsonNode: Option[JsonNode]) {
+
+
+    def changeText(textShape: TextHolder, rootJsonNode: Json, contextJsonNode: Option[Json]) : Unit = {
         val text = textShape.getText()
         val matchRegexpTemplate.r(replacingText, jsonQuery) = text
 
-        logger.debug(s"√ found = [${replacingText}] jsonpath = [${jsonQuery}]")
+        logger.debug(s"√ found = [$replacingText] jsonpath = [$jsonQuery]")
 
-        val (theJsonNode, theJsonPath) = nodeAndQuery(jsonQuery, rootJsonNode, contextJsonNode)
+        val (jsonNode, jsonPath) = nodeAndQuery(jsonQuery, rootJsonNode, contextJsonNode)
 
-        val dataText = JsonPath.query(theJsonPath, theJsonNode) match {
-            case Left(error) => throw new java.lang.Error(error.reason)
-            case Right(i)    => try {
-                Some(i.next().asText())
-            } catch {
-                case e: java.util.NoSuchElementException => logger.error(s"The JSONPath expression ==> ${theJsonPath} <== did not resolve to any data. Ignoring"); None
-                case e: Exception => throw e
-            }
+        val matchedText = JsonPathParser.parse(jsonPath).map { jp =>
+            CirceSolver.solve(jp, jsonNode)
         }
 
-        dataText.map { txt =>
-            val newText = text.replace(replacingText, txt)
-            logger.debug(s"√ dataText = [${txt}] newText = [${newText}]")
-            textShape.setText(newText)
+        matchedText.map { iter =>
+            for ((jsonNode, i) <- iter.zipWithIndex) {
+                logger.debug(s"√ node = ${jsonNode.toString()}")
+                val newText = text.replace(replacingText, {jsonNode.toString()})
+                logger.debug(s"√ dataText = [${jsonNode.toString()}] newText = [$newText]")
+                textShape.setText(newText)
+            }
         }
     }
 
-    def replaceText(rootJsonNode: JsonNode, contextJsonNode: JsonNode, text: String) :String = {
+    def replaceText(rootJson: Json, contextJson: Json, text: String) :String = {
+         logger.warn(s"√ THIS IS NOT IMPLEMENTED")
+
         // fullTemplateText is {{someJsonPath}}
         // jsonQuery is what was found
-        val matchRegexpTemplate.r(fullTemplateText, jsonQuery) = text
+        // val matchRegexpTemplate.r(fullTemplateText, jsonQuery) = text
 
-        val (jsonNode, jsonPath) = nodeAndQuery(jsonQuery, rootJsonNode, Some(contextJsonNode))
+        // val (jsonNode, jsonPath) = nodeAndQuery(jsonQuery, rootJson, Some(contextJson))
 
-        val dataText = JsonPath.query(jsonPath, jsonNode) match {
-            case Left(error) => throw new java.lang.Error(error.reason)
-            case Right(i)    => try {
-                Some(i.next().asText())
-            } catch {
-                case e: java.util.NoSuchElementException => System.err.println(s"The JSONPath expression ==> ${jsonQuery} <== did not resolve to any data. Ignoring"); None
-                case e: Exception => throw e
-            }
-        }
 
-        dataText.map( text.replace(fullTemplateText, _) ).getOrElse("")
+        // val matchedText = JsonPathParser.parse(jsonPath).map { jp =>
+        //     CirceSolver.solve(jp, jsonNode)
+        // }
+
+
+        // matchedText.map { iter =>
+        //     for ((jsonNode, i) <- iter.zipWithIndex) {
+        //         logger.debug(s"√ node = ${jsonNode.toString()}")
+        //     }
+        // }
+
+        // matchedText.map( text.replace(fullTemplateText, _) ).getOrElse("")
+        text
 
     }
 
@@ -227,21 +249,21 @@ object PPTXMerger extends StrictLogging {
      *
      * ! This is a hack because the io.gatling.JsonPath does not support a context object.
      */
-    def nodeAndQuery(jsonQuery: String, rootJsonNode: JsonNode, contextJsonNode: Option[JsonNode]): (JsonNode, String) = {
+    def nodeAndQuery(jsonQuery: String, rootJson: Json, contextJson: Option[Json]): (Json, String) = {
         jsonQuery(0) match {
-            case '$' => (rootJsonNode,        jsonQuery)
-            case '@' => contextJsonNode match {
+            case '$' => (rootJson,        jsonQuery)
+            case '@' => contextJson match {
                             case Some(jn) => (jn, "$" + jsonQuery.stripPrefix("@"))
                             case None     => {
                                 val newJsonPath = "$" + jsonQuery.stripPrefix("@")
                                 logger.warn(s"! jsonPath starts is ${jsonQuery} but the context object is empty. Using root object instead (eg: ${newJsonPath})")
-                                (rootJsonNode, "$" + jsonQuery.stripPrefix("@"))
+                                (rootJson, "$" + jsonQuery.stripPrefix("@"))
                             }
                         }
         }
     }
 
-    def addImage(ppt: XMLSlideShow, slide: XSLFSlide, imagePath: String, imageShapeName: String, shape: XSLFShape, pictureType: PictureType) {
+    def addImage(ppt: XMLSlideShow, slide: XSLFSlide, imagePath: String, imageShapeName: String, shape: XSLFShape, pictureType: PictureType) : Unit = {
 
         val picIS: FileInputStream = new FileInputStream(new File(imagePath))
         // https://stackoverflow.com/questions/4905393/scala-inputstream-to-arraybyte commons-io still the best

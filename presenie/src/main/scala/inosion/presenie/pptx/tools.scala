@@ -1,12 +1,16 @@
-package inosion.pptx
+package inosion.presenie.pptx
 
 import org.apache.poi.xslf.usermodel._ // XMLSlideShow
 import org.apache.poi.sl.usermodel._
 import java.io.File
 import java.io.FileInputStream
-import org.apache.poi.xslf.usermodel.MasterSlideCreator
+import org.apache.poi.xslf.usermodel.MasterSlideTooling
 
-import com.fasterxml.jackson.databind.{ JsonNode, ObjectMapper }
+import io.circe.Json
+
+import io.circe._
+import io.circe.parser._
+import scala.io.Source
 
 import scala.collection.JavaConverters._
 import scala.util.Try
@@ -16,11 +20,13 @@ import java.io.FileOutputStream
 object PPTXTools {
 
     def listSlideLayouts(template: File) = {
+        System.out.println(s":: Slide Layouts for ${template.getAbsolutePath()}" )
+
         val ppt: XMLSlideShow = new XMLSlideShow(new FileInputStream(template.getAbsolutePath()))
         for((master, i) <- ppt.getSlideMasters().asScala.zipWithIndex) {
-          System.out.println(s":: Master [${i} ${master.getXmlObject().getCSld().getName()}]" )
+          System.out.println(s"  :: Master [${i} ${master.getXmlObject().getCSld().getName()}]" )
           for(layout <- master.getSlideLayouts()) {
-              System.out.println(s"Name: ${layout.getName} - Type: ${layout.getType()}")
+              System.out.println(s"    Name: ${layout.getName} - Type: ${layout.getType()}")
           }
         }
     }
@@ -38,7 +44,7 @@ object PPTXTools {
         slide
     }
 
-    def clonePptSlides(srcFile: File, destFile: File) {
+    def clonePptSlides(srcFile: File, destFile: File) : Unit = {
         val pptSrc: XMLSlideShow = new XMLSlideShow(new FileInputStream(srcFile.getAbsolutePath()))
         val pptDest: XMLSlideShow      = new XMLSlideShow()
         pptDest.setPageSize(pptSrc.getPageSize())
@@ -59,7 +65,7 @@ object PPTXTools {
 
         /* not sure how to clone a master sheet */
         for (ms <- pptSrc.getSlideMasters().asScala) {
-            val newms:XSLFSlideMaster = MasterSlideCreator.cloneMasteSlide(ms)
+            val newms:XSLFSlideMaster = MasterSlideTooling.cloneMasterSlide(ms)
 //            newms.importContent(ms)
             pptDest.getSlideMasters().add(newms)
         }
@@ -105,13 +111,12 @@ object PPTXTools {
 
 }
 
+
 object JsonYamlTools {
+  def parseJson(s: String): Either[ParsingFailure, Json] = parse(s)
 
-    val mapper = new ObjectMapper
-    def parseJson(s: String) = mapper.readValue(s, classOf[JsonNode])
-    def readFileToJson(data: File): JsonNode = {
-
-        val filecontents = scala.io.Source.fromFile(data).getLines.mkString
-        parseJson(filecontents)
-    }
+  def readFileToJson(data: File): Either[ParsingFailure, Json] = {
+    val fileContents = Source.fromFile(data).getLines().mkString
+    parseJson(fileContents)
+  }
 }

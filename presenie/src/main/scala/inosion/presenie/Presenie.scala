@@ -1,10 +1,10 @@
-package inosion
+package inosion.presenie
 
 import java.io.File
 import org.rogach.scallop._
 
 
-object DocMaker extends App {
+object Presenie extends App {
 
   val version = "1.0.0"
 
@@ -15,7 +15,7 @@ object DocMaker extends App {
         val template = opt[File](required = true, descr = "The template to merge data with")
         mainOptions = Seq(template)
       }
-      version(s"docmaker ${DocMaker.version} (c) 2019 Inosion")
+      version(s"Presenie ${Presenie.version} (c) 2024 Inosion")
       val verbose =  opt[Boolean]()
 
       val list =     new Subcommand("list") with TemplateArg {}

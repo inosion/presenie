@@ -8,7 +8,7 @@ import scala.collection.JavaConverters._
 
 object RowCloner {
 
-    def cloneRow(table: XSLFTable, rowId: Int) {
+    def cloneRow(table: XSLFTable, rowId: Int) : Unit = {
         val oldRow = table.getRows.get(rowId)
 
         try {
@@ -44,7 +44,7 @@ object RowCloner {
 
     }
 
-    def cloneRow2(table: XSLFTable, rowId: Int) {
+    def cloneRow2(table: XSLFTable, rowId: Int) : Unit = {
 
         val oldRow = table.getRows.get(rowId)
 

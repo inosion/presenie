@@ -30,4 +30,4 @@ gradle run --args="list -t assets/test/source.pptx"
 gradle run --args="merge -t samples/sample_template2.pptx  -d samples/data.json -o ../output_$$.pptx"
 ```
 
-`presenit.run merge -t docmaker/samples/sample_template2.pptx  -d docmaker/samples/data.json -o out/output_${RANDOM}.pptx`
+`./presenie/build/libs/presenie.jar merge -t presenie/samples/sample_template2.pptx  -d presenie/samples/data.json -o out/output_$$.pptx`

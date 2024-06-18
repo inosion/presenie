@@ -14,6 +14,7 @@ object RowCloner {
         try {
              // val ctrow = CTTableRow.Factory.parse(oldRow.getXmlObject().newInputStream())
              val row = table.addRow()
+             row.setHeight(oldRow.getHeight())
              val rowSize = oldRow.getCells().size()
 
              for (x <- 0 until rowSize) {

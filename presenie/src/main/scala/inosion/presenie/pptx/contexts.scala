@@ -3,6 +3,7 @@ package inosion.presenie.pptx
 
 import org.apache.poi.xslf.usermodel._ // XMLSlideShow & friends
 import java.io.File
+import io.circe.Json
 
 /**
   * A Control object on the slide, that holds a subcontext for the control
@@ -15,9 +16,12 @@ trait ControlData {
     // the jsonPath
     def jsonPath: String
 }
-case class PageControlData(shape: XSLFTextShape, controlText: String, jsonPath: String) extends ControlData
-case class GroupShapeControlData(shape: XSLFTextShape, controlText: String, jsonPath: String, direction: Double, gap: Double) extends ControlData
-case class ImageControlData(shape: XSLFTextShape, controlText: String, jsonPath: String) extends ControlData
+// not sure if these need to be XSLFTextShape or XSLFShape
+case class PageControlData(shape: XSLFShape, controlText: String, jsonPath: String) extends ControlData
+case class GroupShapeControlData(shape: XSLFShape, controlText: String, jsonPath: String, direction: Double, gap: Double) extends ControlData
+case class ImageControlData(shape: XSLFShape, controlText: String, jsonPath: String) extends ControlData
+
+case class DataContext(rootJsonNode: Json, contextJsonNode: Option[Json] = None)
 
 
 /**

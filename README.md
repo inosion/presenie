@@ -1,11 +1,9 @@
-# docmaker
+# presenie
 
-docmaker is a PowerPoint Template renderer.
+presenie is a PowerPoint Template renderer.
 
 The Powerpoint is the template, and your data can be either YAML or JSON.
 The resulting powerpoint can then be turned into a PDF, or share as it.
-
-## TL;DR
 
 ## Features
 
@@ -14,9 +12,17 @@ The resulting powerpoint can then be turned into a PDF, or share as it.
 - Text replacement.
 - Image replacement (from URLs in the JSON file)
 
-PPTX Generator from YAML or JSON data
+PPTX Generator from `YAML` or `JSON` data
 
+## Building & Running
 
+**Create a fat executable jar**
+* Build it
+    ```
+    gradle jar
+    chmod +x ./presenie/build/libs/presenie.jar
+    ```
+* This can now be run `./presenie/build/libs/presenie.jar`
 
 ## Testing
 ```

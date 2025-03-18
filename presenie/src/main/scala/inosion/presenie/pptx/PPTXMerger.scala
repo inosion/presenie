@@ -86,11 +86,16 @@ object PPTXMerger extends StrictLogging {
 
         // We will copy this slide from source to new ppt, then fill it's data
         val newSlide = PPTXTools.createSlide(pptNew, srcSlide, visitedLayouts)
-        System.err.println(s":: Cloned from src [${srcPath}(${srcSlide.getSlideNumber()})] to [${destPath}(${newSlide.getSlideNumber()})] ")
+        System.err.println(s":: ------ New Slide from src [${srcPath}(${srcSlide.getSlideNumber()})] to [${destPath}(${newSlide.getSlideNumber()})] ")
 
+        // on the new slide, locate all control fields, any that are page based, we will process
         findControlJsonPath(newSlide.getShapes().asScala) match {
+
+            // page based control fields
             case Some(PageControlData(shape, contextMatch, jsonPath)) => {
-                logger.debug(s"√ Slide [${prettyPrintSlide(newSlide)}] has a jsonPath context -> ${jsonPath}")
+                logger.debug(s"√ Slide [${prettyPrintSlide(newSlide)}] has a PageControl - jsonPath context -> ${jsonPath}")
+
+                // remove controlShape
                 newSlide.removeShape(shape)
 
                 val result = JsonPathParser.parse(jsonPath).map { jp =>
@@ -103,10 +108,14 @@ object PPTXMerger extends StrictLogging {
                         processSlide(srcPath, destPath, newSlide, pptNew, rootJson, Some(jsonNode), visitedLayouts)
                     }
                 }
+
                 // now we have templated it out, let's remove it
                 pptNew.removeSlide(newSlide.getSlideNumber() - 1)
             }
+            // unsupported control fields
             case Some(_) => logger.error(s"! Slide [${prettyPrintSlide(newSlide)}] has a control but it is not a PageControlData")
+
+            // no page control fields found, process all shapes
             case None => processAllShapes(newSlide, rootJson, contextJson)
         }
 
@@ -172,13 +181,12 @@ object PPTXMerger extends StrictLogging {
             CirceSolver.solve(jp, jsonNode)
         }
 
-
         jpResult.map{ iter =>
             for ((jsonNode, i) <- iter.zipWithIndex) {
                 logger.debug(s"√ Table node = ${jsonNode.toString()}")
                 RowCloner.cloneRow(table, 1) // including cells
                 for ((cell, ci) <- table.getRows().get(table.getRows().size() - 1).getCells().asScala.zipWithIndex) {
-                    cell.setText(replaceText(rootJson, jsonNode, cell.getText()))
+                    changeText(cell, rootJson, Some(jsonNode))
                     cell.setStrokeStyle(cell.getStrokeStyle())
                 }
             }
@@ -209,37 +217,11 @@ object PPTXMerger extends StrictLogging {
         matchedText.map { iter =>
             for ((jsonNode, i) <- iter.zipWithIndex) {
                 logger.debug(s"√ node = ${jsonNode.toString()}")
-                val newText = text.replace(replacingText, {jsonNode.toString()})
+                val newText = text.replace(replacingText, {jsonNode.asString.getOrElse(jsonNode.toString())})
                 logger.debug(s"√ dataText = [${jsonNode.toString()}] newText = [$newText]")
                 textShape.setText(newText)
             }
         }
-    }
-
-    def replaceText(rootJson: Json, contextJson: Json, text: String) :String = {
-         logger.warn(s"√ THIS IS NOT IMPLEMENTED")
-
-        // fullTemplateText is {{someJsonPath}}
-        // jsonQuery is what was found
-        // val matchRegexpTemplate.r(fullTemplateText, jsonQuery) = text
-
-        // val (jsonNode, jsonPath) = nodeAndQuery(jsonQuery, rootJson, Some(contextJson))
-
-
-        // val matchedText = JsonPathParser.parse(jsonPath).map { jp =>
-        //     CirceSolver.solve(jp, jsonNode)
-        // }
-
-
-        // matchedText.map { iter =>
-        //     for ((jsonNode, i) <- iter.zipWithIndex) {
-        //         logger.debug(s"√ node = ${jsonNode.toString()}")
-        //     }
-        // }
-
-        // matchedText.map( text.replace(fullTemplateText, _) ).getOrElse("")
-        text
-
     }
 
     /**
@@ -291,6 +273,11 @@ object PPTXMerger extends StrictLogging {
     case class ImageControlData(shape: XSLFShape, controlText: String, jsonPath: String) extends ControlData
 
 
+    /**
+     * Given a list of shapes, we will find the first shape that has a control string
+     * and return the control data
+     * ControlData is a looping object on the slide
+     */
     def findControlJsonPath(shapes: scala.collection.mutable.Seq[XSLFShape]): Option[ControlData] = {
 
         for (shape <- shapes) {
@@ -299,7 +286,7 @@ object PPTXMerger extends StrictLogging {
                 logger.debug(s"⸮ inspecting - Shape[${shape.getShapeName()}] `${textShape.getText()}`")
                 textShape.getText() match {
                     case matchContextControl(controlText, jsonPath) => { // page control
-                        logger.debug(s"√ Match - Shape[${shape.getShapeName()}] control=`${controlText}` jp=`${jsonPath}`")
+                        logger.debug(s"√ Match - PageControl - Shape[${shape.getShapeName()}] control=`${controlText}` jp=`${jsonPath}`")
                         return Some(PageControlData(shape, controlText, jsonPath))
                     }
                     case matchGroupShapeControl(controlText, jsonPath, direction, gap) => {

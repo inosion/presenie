@@ -1,8 +1,11 @@
 {
 	"name": "Java Base Container",
-	"image": "mcr.microsoft.com/vscode/devcontainers/java:latest",
-	"features": {
-		"ghcr.io/devcontainers-contrib/features/scala-sdkman:2": {},
-		"ghcr.io/devcontainers-contrib/features/gradle-sdkman:2": {},
-	}
+	// "image": "mcr.microsoft.com/vscode/devcontainers/java:latest",
+	"build": { "dockerfile": "Dockerfile" }
+
+	
+	// "features": {
+	// 	"ghcr.io/devcontainers-contrib/features/scala-sdkman:2": {},
+	// 	"ghcr.io/devcontainers-contrib/features/gradle-sdkman:2": {},
+	// }
 }

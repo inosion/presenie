@@ -1,5 +1,6 @@
 package inosion.presenie.pptx
 
+import org.slf4j.MDC
 
 import org.apache.poi.xslf.usermodel._ // XMLSlideShow
 import org.apache.poi.sl.usermodel._
@@ -37,36 +38,47 @@ object PPTXMerger extends StrictLogging {
     def f[T](v: T)(implicit ev: ClassTag[T]) = ev.toString
 
     val JsonPathReg                   = raw"[\$$@]|[\$$@]\.[0-9A-Za-z_:\-\?\.\[\]\*]+"
-    val matchRegexpTemplate           = raw".*(\{\{\s*(" + JsonPathReg + raw")\s*\}\}).*"
-    val matchContextControl           = (raw"(\{\s*context\s*=\s*(" + JsonPathReg + raw")\s*\})").r
-    val matchGroupShapeControl        = (raw"(\{\s*context\s*=\s*(" + JsonPathReg + raw")\s*dir\s*=\s*(\d+)\s+gap=(\d+)\s*\})").r
+    val matchRegexpTemplate           = raw".*(\{\{\s*(?<jsonpath>" + JsonPathReg + raw")\s*\}\}).*"
+    val matchContextControl           = (raw"(\{\s*context\s*=\s*(?<jsonpath>" + JsonPathReg + raw")\s*\})").r
+    val _grpShape = raw"(?s)(\{\s*context\s*=\s*(?<jsonpath>" + JsonPathReg + raw")\s*dir\s*=\s*(?<dir>\d+)(\s+gap=(?<gap>\d+))?\s*\})"
+    val matchGroupShapeControl        = _grpShape.r
+    type SlideIndexMap = mutable.ListBuffer[Int]
 
     def render(data: File, template: File, outFile: File): Either[Error, Unit] = {
 
         // we need to track which SlideLayouts we ported across
         val visitedLayouts: mutable.Seq[XSLFSlideLayout] = mutable.Seq()
+
         logger.debug(s"! Regexp for templates = ${matchRegexpTemplate}")
         logger.debug(s"! Regexp for controls = ${matchContextControl}")
         logger.debug(s"! Regexp for group shape controls = ${matchGroupShapeControl}")
 
-        val pptTemplate: XMLSlideShow = new XMLSlideShow(new FileInputStream(template.getAbsolutePath()))
-        val pptNew: XMLSlideShow      = new XMLSlideShow(new FileInputStream(template.getAbsolutePath()))
+        // clone the slide 
+        PPTXTools.clonePptx(template.toPath(), outFile.toPath())
 
-        // fastest way to clone the sheet I can see is copy it, then remove all slides
-        // to retain the master slide layouts.
-        for (idx <- 0 until pptNew.getSlides.size()) {
-            logger.debug(s"√ Removing slide ${prettyPrintSlide(pptNew.getSlides().get(0))}")
-            pptNew.removeSlide(0)
-        }
+        val pptTemplate: XMLSlideShow = new XMLSlideShow(new FileInputStream(template.getAbsolutePath()))
+        val pptNew: XMLSlideShow      = new XMLSlideShow(new FileInputStream(outFile.getAbsolutePath()))
 
         val jsonData = JsonYamlTools.readFileToJson(data) match {
             case Right(a) => a
             case Left(e) => throw e
         }
 
+        // because we are looping over slides, we can't "modify" the slide in place
+        // so we loop over the source template, as Read-Only, and use the destination
+        // slide to clone slides, and data from / to
 
-        for (srcSlide <- pptTemplate.getSlides().asScala) {
-            processSlide(template.getPath(), outFile.getPath, srcSlide, pptNew, jsonData, None, visitedLayouts)
+        // track which slide index corresponds to which slide in the new ppt
+        val slideIndexMap: SlideIndexMap = (0 to pptTemplate.getSlides().size() - 1).toList.to(mutable.ListBuffer)
+        
+
+        logger.debug(s"! Slide Count == ${pptTemplate.getSlides().size()}")
+        for (slideIndex <- (0 to pptTemplate.getSlides().size() - 1)) {
+              logger.debug(s"in loop slide count idx=${slideIndex} pptTemplate.size()=${pptTemplate.getSlides().size()}")
+              logger.debug(s"! Slide index map = ${slideIndexMap.mkString(",")} Getting --> ${slideIndexMap(slideIndex)}")
+              val sourceSlide = pptNew.getSlides().get(slideIndexMap(slideIndex))
+              logger.debug(s"render: [${slideIndex} from ${slideIndexMap.mkString(",")}] ${prettyPrintSlide(sourceSlide)}")
+              processSlide(slideIndex, template.getPath(), outFile.getPath, sourceSlide, pptNew, jsonData, None, slideIndexMap)
         }
 
         pptNew.write(new FileOutputStream(outFile))
@@ -81,42 +93,61 @@ object PPTXMerger extends StrictLogging {
 
     def prettyPrintShape(shape: XSLFShape): String = shape.getShapeName()
 
+    def moveIndexesDown(slideIndexMap: SlideIndexMap, start: Int) : Unit = {
+        logger.debug(s"Slide index map b4  = ${slideIndexMap.mkString(",")}")
+        for (i <- start to slideIndexMap.length - 1) {
+            slideIndexMap(i) = slideIndexMap(i) + 1
+        }
+        logger.debug(s"Slide index map aft = ${slideIndexMap.mkString(",")}")
+    }
 
-    def processSlide(srcPath: String, destPath: String, srcSlide: XSLFSlide, pptNew: XMLSlideShow, rootJson: Json, contextJson: Option[Json], visitedLayouts: mutable.Seq[XSLFSlideLayout]) : Unit = {
+    def moveIndexesUp(slideIndexMap: SlideIndexMap, start: Int) : Unit = {
+        logger.debug(s"Slide index map b4  = ${slideIndexMap.mkString(",")}")
+        for (i <- start to slideIndexMap.length - 1) {
+            slideIndexMap(i) = slideIndexMap(i) - 1
+        }
+        logger.debug(s"Slide index map aft = ${slideIndexMap.mkString(",")}")
+    }
 
-        // We will copy this slide from source to new ppt, then fill it's data
-        val newSlide = PPTXTools.createSlide(pptNew, srcSlide, visitedLayouts)
-        System.err.println(s":: ------ New Slide from src [${srcPath}(${srcSlide.getSlideNumber()})] to [${destPath}(${newSlide.getSlideNumber()})] ")
+    def processSlide(srcIdx: Int, srcPath: String, destPath: String, sourceSlide: XSLFSlide, pptNew: XMLSlideShow, rootJson: Json, contextJson: Option[Json], slideIndexMap: SlideIndexMap) : Unit = {
+        withDepthLogging {
 
-        // on the new slide, locate all control fields, any that are page based, we will process
-        findControlJsonPath(newSlide.getShapes().asScala) match {
+            // on the new slide, locate all control fields, any that are page based, we will process
+            findControlJsonPath(sourceSlide.getShapes().asScala) match {
 
-            // page based control fields
-            case Some(PageControlData(shape, contextMatch, jsonPath)) => {
-                logger.debug(s"√ Slide [${prettyPrintSlide(newSlide)}] has a PageControl - jsonPath context -> ${jsonPath}")
+                // page based control fields
+                case Some(PageControlData(shape, contextMatch, jsonPath)) => {
+                    logger.debug(s"√ Slide [${prettyPrintSlide(sourceSlide)}] has a PageControl - jsonPath context -> ${jsonPath}")
 
-                // remove controlShape
-                newSlide.removeShape(shape)
+                    // remove controlShape
+                    sourceSlide.removeShape(shape)
 
-                val result = JsonPathParser.parse(jsonPath).map { jp =>
-                    CirceSolver.solve(jp, rootJson)
-                }
-
-                result.map{ iter =>
-                    for ((jsonNode, i) <- iter.zipWithIndex) {
-                        logger.debug(s"√ node = ${jsonNode.toString()}")
-                        processSlide(srcPath, destPath, newSlide, pptNew, rootJson, Some(jsonNode), visitedLayouts)
+                    val dataContextOnPage = JsonPathParser.parse(jsonPath).map { jp =>
+                        CirceSolver.solve(jp, rootJson)
                     }
+
+                    dataContextOnPage.map{ iter =>
+                        for ((jsonNode, i) <- iter.zipWithIndex) {
+                            logger.debug(s"√ node = ${jsonNode.toString()}")
+
+                            // clone the slide
+                            val newSlide: XSLFSlide = PPTXTools.createSlide(pptNew, sourceSlide, srcIdx + 1)
+                            logger.debug(s"√ Cloned slide [${prettyPrintSlide(sourceSlide)}] to [${prettyPrintSlide(newSlide)}]")
+                            moveIndexesDown(slideIndexMap, srcIdx + 1)
+                            processSlide(srcIdx, srcPath, destPath, newSlide, pptNew, rootJson, Some(jsonNode), slideIndexMap)
+                        }
+                    }
+
+                    // now we have templated it out, let's remove the original page
+                    pptNew.removeSlide(sourceSlide.getSlideNumber() - 1)
+                    moveIndexesUp(slideIndexMap, srcIdx + 1)
                 }
+                // unsupported control fields
+                case Some(_) => logger.error(s"! Slide [${prettyPrintSlide(sourceSlide)}] has a control but it is not a PageControlData")
 
-                // now we have templated it out, let's remove it
-                pptNew.removeSlide(newSlide.getSlideNumber() - 1)
+                // no page control fields found, process all shapes
+                case None => processAllShapes(sourceSlide, rootJson, contextJson)
             }
-            // unsupported control fields
-            case Some(_) => logger.error(s"! Slide [${prettyPrintSlide(newSlide)}] has a control but it is not a PageControlData")
-
-            // no page control fields found, process all shapes
-            case None => processAllShapes(newSlide, rootJson, contextJson)
         }
 
     }
@@ -134,7 +165,7 @@ object PPTXMerger extends StrictLogging {
                       logger.debug(s"✖ '${textShape.getText()}' did not match")
                     }
 
-                case group : XSLFGroupShape => processGroupShape(group)
+                case group : XSLFGroupShape => () // processGroupShape(group)
                 case table : XSLFTable  if (hasControl(table.getRows().get(0).getCells().get(0)))    => {
                     logger.debug(s"√ we have a table - ${table.getRows().get(0).getCells().get(0).getText()}")
                     iterateTable(table, rootJson, contextJson)
@@ -145,23 +176,31 @@ object PPTXMerger extends StrictLogging {
         }
     }
 
+    def processAutoShape(autoShape: XSLFAutoShape): Unit = { 
+
+    }
+
     def processGroupShape(groupShape: XSLFGroupShape) : Unit = {
         logger.debug(s"⸮ Inspecting XSLFGroupShape[${groupShape.getShapeName()}]...")
+        // loop through all 
         findControlJsonPath(groupShape.getShapes().asScala) match {
             case None => logger.debug(s"✖ XSLFGroupShape[${groupShape.getShapeName()}] - no control, ignoring")
+
+            // we found the control field inside this group object
             case Some(GroupShapeControlData(shape, controlMatch, jsonPath, direction, gap)) => {
                 logger.debug(s"√ Found the XSLFGroupShape[${groupShape.getShapeName()}] with control fields")
                 val newGroupShape: XSLFGroupShape = groupShape.getSheet().createGroup()
                 newGroupShape.setAnchor(groupShape.getAnchor())
 
-                for (shape <- groupShape.getShapes().asScala) {
-                    shape match {
-                        case s: XSLFAutoShape => logger.debug("not impl yet") // newGroupShape.createAutoShape()
-                        case t: XSLFTextBox   => newGroupShape.createTextBox().setText(t.getText())
-                        case _ => logger.error(s"The group ${prettyPrintShape(groupShape)} has a shape ${prettyPrintShape(shape)} that did not match")
-                    }
+                // for (shape <- groupShape.getShapes().asScala) {
+                //     shape match {
+                //         case a: XSLFAutoShape => newGroupShape.createAutoShape().setText(a.getText())
+                //         case s: XSLFGroupShape => processGroupShape(s)
+                //         case t: XSLFTextBox   => newGroupShape.createTextBox().setText(t.getText())
+                //         case _ => logger.error(s"The group ${prettyPrintShape(groupShape)} has a shape ${prettyPrintShape(shape)} that did not match")
+                //     }
 
-                }
+                // }
                 // nned to remove it on the outer /// groupShape.removeShape(shape)
             }
         }
@@ -283,21 +322,35 @@ object PPTXMerger extends StrictLogging {
         for (shape <- shapes) {
             if (shape.isInstanceOf[TextHolder]) {
                 val textShape = shape.asInstanceOf[TextHolder]
+                val text = textShape.getText()
                 logger.debug(s"⸮ inspecting - Shape[${shape.getShapeName()}] `${textShape.getText()}`")
-                textShape.getText() match {
-                    case matchContextControl(controlText, jsonPath) => { // page control
-                        logger.debug(s"√ Match - PageControl - Shape[${shape.getShapeName()}] control=`${controlText}` jp=`${jsonPath}`")
-                        return Some(PageControlData(shape, controlText, jsonPath))
-                    }
-                    case matchGroupShapeControl(controlText, jsonPath, direction, gap) => {
-                        logger.debug(s"√ Match - Shape[${shape.getShapeName()}] control=`${controlText}` jp=`${jsonPath}` dir=${direction} gap=${gap}")
-                        return Some(GroupShapeControlData(shape, controlText, jsonPath, direction.toInt, gap.toInt))
-                    }
-                    case _ => {
-                        logger.debug(s"✖ shape:${shape.getShapeName()} did not have a controlData")
 
-                    }
+                // Direct regex match test
+                val groupShapeMatch = matchGroupShapeControl.findFirstMatchIn(text)
+                if (groupShapeMatch.isDefined) {
+                    val jsonPath = groupShapeMatch.get.group("jsonpath")
+                    val direction = groupShapeMatch.get.group("dir")
+                    val gap = if (groupShapeMatch.get.group("gap") != null) groupShapeMatch.get.group("gap").toInt else 0
+                    val controlText = groupShapeMatch.get.group(0)
+                    logger.debug(s"√ Match - Shape[${shape.getShapeName()}] control=`${controlText}` jp=`${jsonPath}` dir=${direction} gap=${gap}")
+                    return Some(GroupShapeControlData(shape, controlText, jsonPath, direction.toInt, gap))
+                } else {
+                    logger.debug(s"✖ Direct regex match not found for group shape control")
                 }
+                                
+
+                val contextControlMatch = matchContextControl.findFirstMatchIn(text)
+                if (contextControlMatch.isDefined) {
+                    val jsonPath = contextControlMatch.get.group("jsonpath")
+                    val controlText = contextControlMatch.get.group(0)
+                    logger.debug(s"√ Match - Shape[${shape.getShapeName()}] control=`${controlText}` jp=`${jsonPath}`")
+                    return Some(PageControlData(shape, controlText, jsonPath))
+                } else {
+                    logger.debug(s"✖ Direct regex match not found for context control")
+                }
+
+                logger.debug(s"✖ shape:${shape.getShapeName()} ${text} did not have a controlData")
+        
             }
         }
         None
@@ -317,6 +370,17 @@ object PPTXMerger extends StrictLogging {
       shape.getText().matches(matchRegexpTemplate)
 
     def hasControl(shape: TextHolder): Boolean = matchContextControl.findFirstIn(shape.getText()).isDefined
+
+
+    def withDepthLogging[T](block: => T): T = {
+        val depth = Option(MDC.get("depth")).map(_.toInt).getOrElse(0)
+        MDC.put("depth", (depth + 1).toString)
+        try {
+            block
+        } finally {
+            MDC.put("depth", depth.toString)
+        }
+    }
 
 }
 

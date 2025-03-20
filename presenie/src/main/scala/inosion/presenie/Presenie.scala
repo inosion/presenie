@@ -47,7 +47,7 @@ object Presenie extends App {
     }
     case Some(conf.cloner) => {
       Console.println(s"Cloned ${conf.merge.template.apply().getAbsolutePath()} --> ${conf.merge.outFile.apply().getAbsolutePath()}")
-      pptx.PPTXTools.clonePptSlides(conf.cloner.template(), conf.cloner.outFile())
+      pptx.PPTXTools.clonePptx(conf.cloner.template().toPath(), conf.cloner.outFile().toPath())
     }
     case _ => conf.printHelp()
   }

@@ -93,6 +93,11 @@ object PPTXMerger extends StrictLogging {
 
     def prettyPrintShape(shape: XSLFShape): String = shape.getShapeName()
 
+    def prettyPrintAnchor(anchor: Rectangle2D): String = {
+        // rounded to 3 decimal places output 
+        s"${anchor.getWidth()}%.3fx${anchor.getHeight()}%.3f @ x=${anchor.getX()}%.3f y=${anchor.getY()}%.3f"        
+    }    
+
     def moveIndexesDown(slideIndexMap: SlideIndexMap, start: Int) : Unit = {
         logger.debug(s"Slide index map b4  = ${slideIndexMap.mkString(",")}")
         for (i <- start to slideIndexMap.length - 1) {
@@ -154,8 +159,10 @@ object PPTXMerger extends StrictLogging {
 
     def processAllShapes(slide: XSLFSlide,  rootJson: Json, contextJson: Option[Json]) : Unit = {
 
-        for (shape <- slide.getShapes().asScala) {
+        val shapeCount = slide.getShapes().size()
+        for (shapeIndex <- (0 to shapeCount -1)) {
 
+            val shape = slide.getShapes().get(shapeIndex)
             shape match {
                 case textShape : TextHolder =>
                     if (hasTemplate(textShape)) {
@@ -165,7 +172,11 @@ object PPTXMerger extends StrictLogging {
                       logger.debug(s"✖ '${textShape.getText()}' did not match")
                     }
 
-                case group : XSLFGroupShape => () // processGroupShape(group)
+                case group : XSLFGroupShape => { 
+                    processGroupShape(slide, group, rootJson, contextJson)
+                    // remote the group shape
+                    // slide.removeShape(group)
+                }
                 case table : XSLFTable  if (hasControl(table.getRows().get(0).getCells().get(0)))    => {
                     logger.debug(s"√ we have a table - ${table.getRows().get(0).getCells().get(0).getText()}")
                     iterateTable(table, rootJson, contextJson)
@@ -176,11 +187,88 @@ object PPTXMerger extends StrictLogging {
         }
     }
 
-    def processAutoShape(autoShape: XSLFAutoShape): Unit = { 
+    def calcNewAnchor(currentAnchor: Rectangle2D, direction: Int, gap: Int, iteration: Int) : Rectangle2D = {
+        val newD = gap + ((currentAnchor.getWidth() * Math.abs(Math.cos(Math.toRadians(direction)))) + (currentAnchor.getHeight() * Math.abs(Math.sin(Math.toRadians(direction)))) ) / 2
+
+        // the gap is the distance from the edge of the shape, on the vector of the direction
+        val newAnchorX = currentAnchor.getX() + (newD * Math.cos(Math.toRadians(direction))) 
+        val newAnchorY = currentAnchor.getY() + (newD * Math.sin(Math.toRadians(direction)))
+
+        new Rectangle2D.Double(newAnchorX, newAnchorY, currentAnchor.getWidth(), currentAnchor.getHeight())
+    }
+    def calcNewAnchorFixedDown(currentAnchor: Rectangle2D, direction: Int, gap: Int, iteration: Int) : Rectangle2D = {
+
+        // the gap is the distance from the edge of the shape, on the vector of the direction
+        val newAnchorX = currentAnchor.getX()
+        val newAnchorY = currentAnchor.getY() + ((currentAnchor.getHeight() + gap) * iteration)
+
+        new Rectangle2D.Double(newAnchorX, newAnchorY, currentAnchor.getWidth(), currentAnchor.getHeight())
+    }
+
+
+    def cloneShape(slide: XSLFSlide, sourceShape: XSLFShape, direction: Int, gap: Int, iteration: Int, translate: Boolean, rootJson: Json, contextJson: Option[Json], parentShape: Option[XSLFGroupShape]): XSLFShape = {
+
+        logger.debug(s"⸮ Cloning shape ${prettyPrintShape(sourceShape)} in direction ${direction} gap ${gap}")
+        // direction is degrees 0 to 360
+        // gap is how far in that direction to move the new shape
+        val currentAnchor = sourceShape.getAnchor()
+
+        val newAnchor = if (translate) {
+            calcNewAnchorFixedDown(currentAnchor, direction, gap, iteration)
+        } else {
+            currentAnchor.clone().asInstanceOf[Rectangle2D]
+        }
+        
+        logger.debug(s"√ currentAnchor = ${prettyPrintAnchor(currentAnchor)} newAnchor = ${prettyPrintAnchor(newAnchor)}")
+
+        sourceShape match { 
+            case g: XSLFGroupShape => {
+                val newGroupShape = slide.createGroup();
+                newGroupShape.setInteriorAnchor(g.getInteriorAnchor())
+                newGroupShape.setAnchor(newAnchor)
+                for (shape <- g.getShapes().asScala) {
+                    // 0,0,0, False no direction, no gap, always 0 iteration, no translation
+                     val newShape = cloneShape(slide, shape, 0, 0, 0, false, rootJson, contextJson, Some(newGroupShape))
+                }
+                return newGroupShape
+            }
+            case t: XSLFTextBox => {
+                val newShape = parentShape match { 
+                    case Some(g) => g.createTextBox()
+                    case None => slide.createTextBox()
+                }
+                newShape.setAnchor(newAnchor)
+                newShape.setText(t.getText())
+                return newShape
+            }
+            case a: XSLFAutoShape => {
+                logger.debug(s"√ Cloning AutoShape ${a.getShapeName()}")
+                val newShape = parentShape match { 
+                    case Some(g) => g.createAutoShape()
+                    case None => slide.createAutoShape()
+                }
+                newShape.setShapeType(a.getShapeType());
+                newShape.setAnchor(newAnchor)
+                newShape.setText(a.getText())
+                newShape.setFillColor(a.getFillColor())
+                newShape.setLineColor(a.getLineColor())
+                newShape.setLineWidth(a.getLineWidth())
+                newShape.setFlipHorizontal(a.getFlipHorizontal())
+                newShape.setFlipVertical(a.getFlipVertical())
+                newShape.setRotation(a.getRotation())
+                changeText(newShape, rootJson, contextJson)
+                return newShape
+            }
+            
+            case _ => {
+                logger.error(s"! Shape ${prettyPrintShape(sourceShape)} is currently not supported for cloning");
+                return null
+            }
+        }
 
     }
 
-    def processGroupShape(groupShape: XSLFGroupShape) : Unit = {
+    def processGroupShape(slide: XSLFSlide, groupShape: XSLFGroupShape, rootJson: Json, contextJson: Option[Json]) : Unit = {
         logger.debug(s"⸮ Inspecting XSLFGroupShape[${groupShape.getShapeName()}]...")
         // loop through all 
         findControlJsonPath(groupShape.getShapes().asScala) match {
@@ -189,19 +277,26 @@ object PPTXMerger extends StrictLogging {
             // we found the control field inside this group object
             case Some(GroupShapeControlData(shape, controlMatch, jsonPath, direction, gap)) => {
                 logger.debug(s"√ Found the XSLFGroupShape[${groupShape.getShapeName()}] with control fields")
-                val newGroupShape: XSLFGroupShape = groupShape.getSheet().createGroup()
-                newGroupShape.setAnchor(groupShape.getAnchor())
+                // remove the control shape, from the groupshape.
+                groupShape.removeShape(shape)
 
-                // for (shape <- groupShape.getShapes().asScala) {
-                //     shape match {
-                //         case a: XSLFAutoShape => newGroupShape.createAutoShape().setText(a.getText())
-                //         case s: XSLFGroupShape => processGroupShape(s)
-                //         case t: XSLFTextBox   => newGroupShape.createTextBox().setText(t.getText())
-                //         case _ => logger.error(s"The group ${prettyPrintShape(groupShape)} has a shape ${prettyPrintShape(shape)} that did not match")
-                //     }
+                val (jsonNode, newJp) = nodeAndQuery(jsonPath, rootJson, contextJson)
 
-                // }
-                // nned to remove it on the outer /// groupShape.removeShape(shape)
+                val dataContextOnGroupShape = JsonPathParser.parse(newJp).map { jp =>
+                    CirceSolver.solve(jp, jsonNode)
+                }
+
+                dataContextOnGroupShape.map{ iter =>
+                    for ((jn, i) <- iter.zipWithIndex) {
+                        logger.debug(s"√ node = ${jn.toString()}")
+
+                        // clone the shape
+                        val theGap = if (i == 0) 0 else gap
+                        val translate = true
+                        cloneShape(slide, groupShape, direction, theGap, i, translate, rootJson, Some(jn), None)
+                    }
+                }
+
             }
         }
     }
@@ -239,10 +334,14 @@ object PPTXMerger extends StrictLogging {
 
     }
 
-
-
     def changeText(textShape: TextHolder, rootJsonNode: Json, contextJsonNode: Option[Json]) : Unit = {
         val text = textShape.getText()
+
+        // if there is no text, returm
+        if (text == null || text.isEmpty()) {
+            return
+        }
+        
         val matchRegexpTemplate.r(replacingText, jsonQuery) = text
 
         logger.debug(s"√ found = [$replacingText] jsonpath = [$jsonQuery]")

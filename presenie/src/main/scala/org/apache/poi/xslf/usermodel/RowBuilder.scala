@@ -4,6 +4,8 @@ package org.apache.poi.xslf.usermodel
 import org.apache.poi.sl.usermodel._
 import org.openxmlformats.schemas.drawingml.x2006.main.CTTableRow
 
+import inosion.presenie.pptx.PPTXMerger
+import inosion.presenie.pptx.PPTXTools
 import scala.collection.JavaConverters._
 
 object RowCloner {
@@ -17,9 +19,33 @@ object RowCloner {
              val rowSize = oldRow.getCells().size()
 
              for (x <- 0 until rowSize) {
-                 val cell = row.addCell()
-                 val oldCell = oldRow.getCells().get(x)
-                 cell.setText(oldCell.getText())
+                val cell = row.addCell()
+                val oldCell = oldRow.getCells().get(x)
+                cell.setText(oldCell.getText())
+                
+                cell.setVerticalAlignment(oldCell.getVerticalAlignment())
+                cell.setLeftInset(oldCell.getLeftInset())
+                cell.setRightInset(oldCell.getRightInset())
+                cell.setTopInset(oldCell.getTopInset())
+                cell.setBottomInset(oldCell.getBottomInset())
+
+                // get the font styling from the old cell first paragraph first run
+                val oldRun = oldCell.getTextParagraphs().get(0).getTextRuns().get(0)
+                PPTXTools.textParagraphCloneStyle(oldCell.getTextParagraphs().get(0), cell.getTextParagraphs().get(0))
+                cell.getTextParagraphs().get(0).getTextRuns().get(0).setFontColor(oldRun.getFontColor())
+                cell.getTextParagraphs().get(0).getTextRuns().get(0).setFontFamily(oldRun.getFontFamily())
+                cell.getTextParagraphs().get(0).getTextRuns().get(0).setFontSize(oldRun.getFontSize())
+                cell.getTextParagraphs().get(0).getTextRuns().get(0).setUnderlined(oldRun.isUnderlined())
+                cell.getTextParagraphs().get(0).getTextRuns().get(0).setStrikethrough(oldRun.isStrikethrough())
+                cell.getTextParagraphs().get(0).getTextRuns().get(0).setSuperscript(oldRun.isSuperscript())
+                cell.getTextParagraphs().get(0).getTextRuns().get(0).setSubscript(oldRun.isSubscript())
+                cell.getTextParagraphs().get(0).getTextRuns().get(0).setItalic(oldRun.isItalic())
+                cell.getTextParagraphs().get(0).getTextRuns().get(0).setBold(oldRun.isBold())
+
+                 
+                 // reapply the same font styling
+                 // PPTXMerger.rawChangeTextPreserveStyling(cell, oldCell.getText())
+                 
                  cell.setFillColor(oldCell.getFillColor())
 
                  for (beType <- List(TableCell.BorderEdge.bottom, TableCell.BorderEdge.top, TableCell.BorderEdge.right, TableCell.BorderEdge.left)) {

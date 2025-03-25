@@ -351,7 +351,7 @@ object PPTXMerger extends StrictLogging {
             for (row <- table.getRows().asScala) {
                 for ((cell, ci) <- table.getRows().get(table.getRows().size() - 1).getCells().asScala.zipWithIndex) {
                     logger.debug(s"⸮ changing text in Table[${table.getShapeName()}] cell ${ci} - [${cell.getText()}]... ")
-                    changeText(cell, rootJson, None)
+                    changeText(cell, rootJson, contextJson)
                 }
             }
         } else { 
@@ -383,6 +383,47 @@ object PPTXMerger extends StrictLogging {
             table.removeRow(1)
             // remove the context string
             table.getRows().get(0).getCells().get(0).setText(firstCellText.replace(controlString, ""))
+        }
+    }
+
+    def rawChangeTextPreserveStyling(textShape: TextHolder, newText: String) : Unit = { 
+        val textShapeParagraphs = textShape.getTextParagraphs()
+        val textShapeParagraphTextRuns = textShapeParagraphs.get(0).getTextRuns()
+        logger.debug(s"Reapplying style text for : Shape[${prettyPrintShape(textShape)}] `${textShape.getText()}` to `${newText}`")
+        for (r <- textShapeParagraphTextRuns.asScala) {
+            r.setText(newText);
+        }
+    }
+
+    def rawChangeTextPreserveStyling2(textShape: TextHolder, newText: String) : Unit = {
+
+        logger.debug(s"Reapplying style text for : Shape[${prettyPrintShape(textShape)}] `${textShape.getText()}` to `${newText}`")
+        // get the original style
+        val style = textShape.getTextParagraphs().get(0).getTextRuns().get(0)
+
+        textShape.getTextParagraphs().get(0).getTextRuns().get(0).setText(newText)
+
+        // reapply all the style information
+        textShape.getTextParagraphs().get(0).getTextRuns().get(0).setFontColor(style.getFontColor())
+        textShape.getTextParagraphs().get(0).getTextRuns().get(0).setFontFamily(style.getFontFamily())
+        textShape.getTextParagraphs().get(0).getTextRuns().get(0).setFontSize(style.getFontSize())
+        textShape.getTextParagraphs().get(0).getTextRuns().get(0).setBold(style.isBold())
+        textShape.getTextParagraphs().get(0).getTextRuns().get(0).setItalic(style.isItalic())
+        textShape.getTextParagraphs().get(0).getTextRuns().get(0).setUnderlined(style.isUnderlined())
+        textShape.getTextParagraphs().get(0).getTextRuns().get(0).setStrikethrough(style.isStrikethrough())
+        textShape.getTextParagraphs().get(0).getTextRuns().get(0).setSubscript(style.isSubscript())
+        textShape.getTextParagraphs().get(0).getTextRuns().get(0).setSuperscript(style.isSuperscript())
+        textShape.getTextParagraphs().get(0).getTextRuns().get(0).setCharacterSpacing(style.getCharacterSpacing())
+        
+    }
+
+    def debugTextHolder(textHolder: TextHolder) : Unit = { 
+        logger.debug(s"TextHolder[${textHolder.getShapeName()}] text = ${textHolder.getText()}")
+        for (p <- textHolder.getTextParagraphs().asScala) {
+            logger.debug(s"  Paragraph[${p.getText()}]")
+            for (r <- p.getTextRuns().asScala) {
+                logger.debug(s"    Run[${r.getRawText()}]")
+            }
         }
     }
 
@@ -422,19 +463,18 @@ object PPTXMerger extends StrictLogging {
             CirceSolver.solve(jp, jsonNode)
         }
 
-        matchedText.map { iter =>
-            for ((jsonNode, i) <- iter.zipWithIndex) {
-                logger.debug(s"√ node = ${jsonNode.toString()}")
-                val newText = text.replace(replacingText, {jsonNode.asString.getOrElse(jsonNode.toString())})
-                logger.debug(s"√ dataText = [${jsonNode.toString()}] newText = [$newText]")
-                textShape.setText(newText)
-                textShape.setFillColor(textShape.getFillColor())
-                textShape.setFlipHorizontal(textShape.getFlipHorizontal())
-                textShape.setFlipVertical(textShape.getFlipVertical())
-                textShape.setRotation(textShape.getRotation())
-                textShape.setStrokeStyle(textShape.getStrokeStyle())
-            }
+        // join the matcheed entries via a comma
+
+        val newText = matchedText match {
+            case Right(iter) =>
+                iter.map { jsonNode =>
+                    jsonNode.asString.getOrElse(jsonNode.toString())
+                }.mkString(", ")
+            case Left(error) =>
+                logger.error(s"Error parsing JSONPath: $error")
+                ""
         }
+        rawChangeTextPreserveStyling(textShape, newText)
     }
 
     /**

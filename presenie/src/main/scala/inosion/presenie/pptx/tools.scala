@@ -19,6 +19,19 @@ import java.io.FileOutputStream
 
 object PPTXTools {
 
+
+    def textParagraphCloneStyle(src: XSLFTextParagraph, dest: XSLFTextParagraph) = {
+        // https://poi.apache.org/apidocs/dev/org/apache/poi/xslf/usermodel/XSLFTextParagraph.html
+        dest.setTextAlign(src.getTextAlign())
+        dest.setRightMargin(src.getRightMargin())
+        dest.setLeftMargin(src.getLeftMargin())
+        dest.setLineSpacing(src.getLineSpacing())
+        dest.setIndentLevel(src.getIndentLevel())
+        dest.setSpaceBefore(src.getSpaceBefore())
+        dest.setSpaceAfter(src.getSpaceAfter())
+    }
+
+
     def listSlideLayouts(template: File) = {
         System.out.println(s":: Slide Layouts for ${template.getAbsolutePath()}" )
 

@@ -6,6 +6,7 @@ import org.apache.poi.xslf.usermodel._ // XMLSlideShow
 import org.apache.poi.sl.usermodel._
 import java.io.File
 import java.io._
+import java.awt.Color
 
 // import scala.collection.JavaConverters._
 import scala.jdk.CollectionConverters._
@@ -133,11 +134,11 @@ object PPTXMerger extends StrictLogging {
 
                     dataContextOnPage.map{ iter =>
                         for ((jsonNode, i) <- iter.zipWithIndex) {
-                            logger.debug(s"√ node = ${jsonNode.toString()}")
+                            logger.debug(s" Applying data, under PageControl idx=${i} - ${jsonNode.toString()}")
 
                             // clone the slide
                             val newSlide: XSLFSlide = PPTXTools.createSlide(pptNew, sourceSlide, srcIdx + 1)
-                            logger.debug(s"√ Cloned slide [${prettyPrintSlide(sourceSlide)}] to [${prettyPrintSlide(newSlide)}]")
+                            logger.debug(s"+ Cloned slide [${prettyPrintSlide(sourceSlide)}] to [${prettyPrintSlide(newSlide)}]")
                             moveIndexesDown(slideIndexMap, srcIdx + 1)
                             processSlide(srcIdx, srcPath, destPath, newSlide, pptNew, rootJson, Some(jsonNode), slideIndexMap)
                         }
@@ -350,7 +351,6 @@ object PPTXMerger extends StrictLogging {
             // for every row and every cell, we will change the text
             for (row <- table.getRows().asScala) {
                 for ((cell, ci) <- table.getRows().get(table.getRows().size() - 1).getCells().asScala.zipWithIndex) {
-                    logger.debug(s"⸮ changing text in Table[${table.getShapeName()}] cell ${ci} - [${cell.getText()}]... ")
                     changeText(cell, rootJson, contextJson)
                 }
             }
@@ -390,30 +390,83 @@ object PPTXMerger extends StrictLogging {
         val textShapeParagraphs = textShape.getTextParagraphs()
         val textShapeParagraphTextRuns = textShapeParagraphs.get(0).getTextRuns()
         logger.debug(s"Reapplying style text for : Shape[${prettyPrintShape(textShape)}] `${textShape.getText()}` to `${newText}`")
-        for (r <- textShapeParagraphTextRuns.asScala) {
+        for ((r, i) <- textShapeParagraphTextRuns.asScala.zipWithIndex) {
+            logger.debug(s"  TextRun[${i}] -> `${r.getRawText()}`")
             r.setText(newText);
         }
     }
 
-    def rawChangeTextPreserveStyling2(textShape: TextHolder, newText: String) : Unit = {
+
+    // def replaceTextButKeepStyle(textShape: TextHolder, marker: String, text: String): Unit = {
+    //     val textParagraphList = textShape.getTextParagraphs.asScala
+    //     val textAndStylesTable = textParagraphList.map { textParagraph =>
+    //     val textRunList = textParagraph.getTextRuns.asScala
+    //     val textAndStylesParagraph = textRunList.map { textRun =>
+    //             // get Color:
+    //             val solidPaint = textRun.getFontColor.asInstanceOf[PaintStyle.SolidPaint]
+    //             val color = solidPaint.getSolidColor.getColor.getRGB
+
+    //             // save text & styles:
+    //             val textAndStyle = TextAndStyle(textRun.getRawText, textRun.isBold, color, textRun.getFontSize)
+
+    //             // replace text if marker:
+    //             if (textAndStyle.text.contains(marker)) {
+    //                 textAndStyle.text = textAndStyle.text.replace(marker, text)
+    //             }
+
+    //             textAndStyle
+    //         }
+    //         textAndStylesParagraph
+    //     }
+
+    //     // delete text and add new text with correct styles:
+    //     textShape.setText("")
+    //     textAndStylesTable.foreach { textAndStyles =>
+    //         // val textParagraph = textShape.addNewTextParagraph()
+    //         val textParagraph = textShape.
+    //         textAndStyles.foreach { textAndStyle =>
+    //             val newTextRun = textParagraph.addNewTextRun()
+    //             newTextRun.setText(textAndStyle.text)
+    //             newTextRun.setFontColor(new Color(textAndStyle.colorRgb))
+    //             newTextRun.setBold(textAndStyle.isBold)
+    //             newTextRun.setFontSize(textAndStyle.fontSize)
+    //         }
+    //     }
+    // }
+
+    case class TextAndStyle(var text: String, isBold: Boolean, colorRgb: Int, fontSize: Double, fontFamily: String = "Arial", isItalic: Boolean = false, isUnderlined: Boolean = false, isStrikethrough: Boolean = false, isSubscript: Boolean = false, isSuperscript: Boolean = false, characterSpacing: Double = 0.0)
+
+    def rawChangeTextPreserveStyling2(textShape: TextHolder, newText: String, templateText: String) : Unit = {
 
         logger.debug(s"Reapplying style text for : Shape[${prettyPrintShape(textShape)}] `${textShape.getText()}` to `${newText}`")
         // get the original style
-        val style = textShape.getTextParagraphs().get(0).getTextRuns().get(0)
+        val textRun = textShape.getTextParagraphs().get(0).getTextRuns().get(0)
 
-        textShape.getTextParagraphs().get(0).getTextRuns().get(0).setText(newText)
+
+        // get Color:
+        val solidPaint = textRun.getFontColor.asInstanceOf[PaintStyle.SolidPaint]
+        val color = solidPaint.getSolidColor.getColor.getRGB
+
+        // save text & styles:
+        val textAndStyle = TextAndStyle(textRun.getRawText, textRun.isBold, color, textRun.getFontSize, textRun.getFontFamily, textRun.isItalic, textRun.isUnderlined, textRun.isStrikethrough, textRun.isSubscript, textRun.isSuperscript, textRun.getCharacterSpacing)
+
+        val currentText = textShape.getText()
+        val aa_newText = currentText.replace(templateText, newText)
+
+        textShape.setText(aa_newText)
 
         // reapply all the style information
-        textShape.getTextParagraphs().get(0).getTextRuns().get(0).setFontColor(style.getFontColor())
-        textShape.getTextParagraphs().get(0).getTextRuns().get(0).setFontFamily(style.getFontFamily())
-        textShape.getTextParagraphs().get(0).getTextRuns().get(0).setFontSize(style.getFontSize())
-        textShape.getTextParagraphs().get(0).getTextRuns().get(0).setBold(style.isBold())
-        textShape.getTextParagraphs().get(0).getTextRuns().get(0).setItalic(style.isItalic())
-        textShape.getTextParagraphs().get(0).getTextRuns().get(0).setUnderlined(style.isUnderlined())
-        textShape.getTextParagraphs().get(0).getTextRuns().get(0).setStrikethrough(style.isStrikethrough())
-        textShape.getTextParagraphs().get(0).getTextRuns().get(0).setSubscript(style.isSubscript())
-        textShape.getTextParagraphs().get(0).getTextRuns().get(0).setSuperscript(style.isSuperscript())
-        textShape.getTextParagraphs().get(0).getTextRuns().get(0).setCharacterSpacing(style.getCharacterSpacing())
+        textShape.getTextParagraphs().get(0).getTextRuns().get(0).setFontColor(new Color(textAndStyle.colorRgb))
+        textShape.getTextParagraphs().get(0).getTextRuns().get(0).setBold(textAndStyle.isBold)
+        textShape.getTextParagraphs().get(0).getTextRuns().get(0).setFontSize(textAndStyle.fontSize)
+
+        textShape.getTextParagraphs().get(0).getTextRuns().get(0).setFontFamily(textAndStyle.fontFamily)
+        textShape.getTextParagraphs().get(0).getTextRuns().get(0).setItalic(textAndStyle.isItalic)
+        textShape.getTextParagraphs().get(0).getTextRuns().get(0).setUnderlined(textAndStyle.isUnderlined)
+        textShape.getTextParagraphs().get(0).getTextRuns().get(0).setStrikethrough(textAndStyle.isStrikethrough)
+        textShape.getTextParagraphs().get(0).getTextRuns().get(0).setSubscript(textAndStyle.isSubscript)
+        textShape.getTextParagraphs().get(0).getTextRuns().get(0).setSuperscript(textAndStyle.isSuperscript)
+        textShape.getTextParagraphs().get(0).getTextRuns().get(0).setCharacterSpacing(textAndStyle.characterSpacing)
         
     }
 
@@ -432,30 +485,29 @@ object PPTXMerger extends StrictLogging {
 
         // if there is no text, returm
         if (text == null || text.isEmpty()) {
+            logger.debug(s"Shape[${prettyPrintShape(textShape)}] is empty.. no changes")
             return
-        } else { 
-            logger.debug(s"Changing text for : Shape[${prettyPrintShape(textShape)}] `${textShape.getText()}`")
-        }
+        } 
 
         try {
              
             val jsonQuery = matchRegexpTemplate.r.findFirstMatchIn(text) match { 
                 case Some(m) => m.group("jsonpath")
                 case None => {
-                    logger.debug(s"No match jsonQuery found for : Shape[${prettyPrintShape(textShape)}] `${textShape.getText()}`")
+                    logger.debug(s"(None on Regex) Ignoring text --> Shape[${prettyPrintShape(textShape)}] `${textShape.getText()}`")
                     return
                 }
             }
                 
         } catch {
             case e: scala.MatchError => {
-                logger.debug(s"No match jsonQuery found for : Shape[${prettyPrintShape(textShape)}] `${textShape.getText()}`")
+                logger.debug(s"(MatchError) Ignoring text --> Shape[${prettyPrintShape(textShape)}] `${textShape.getText()}`")
                 return
             }
         }
-        val matchRegexpTemplate.r(replacingText, jsonQuery) = text
+        val matchRegexpTemplate.r(templateText, jsonQuery) = text
 
-        logger.debug(s"√ found = [$replacingText] jsonpath = [$jsonQuery]")
+        logger.debug(s"(Matched) found RegEx [$templateText] jsonPath=[$jsonQuery]")
 
         val (jsonNode, jsonPath) = nodeAndQuery(jsonQuery, rootJsonNode, contextJsonNode)
 
@@ -474,7 +526,8 @@ object PPTXMerger extends StrictLogging {
                 logger.error(s"Error parsing JSONPath: $error")
                 ""
         }
-        rawChangeTextPreserveStyling(textShape, newText)
+        rawChangeTextPreserveStyling2(textShape, newText, templateText)
+        // replaceTextButKeepStyle(textShape, templateText, newText)
     }
 
     /**

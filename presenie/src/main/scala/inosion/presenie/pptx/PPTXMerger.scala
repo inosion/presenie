@@ -37,7 +37,7 @@ object PPTXMerger extends StrictLogging {
 
     def f[T](v: T)(implicit ev: ClassTag[T]) = ev.toString
 
-    val JsonPathReg                   = raw"[\$$@]|[\$$@]\.[0-9A-Za-z_:\-\?\.\[\]\*]+"
+    val JsonPathReg                   = raw"[\$$@]|[\$$@]\.[0-9A-Za-z_:\-\?\.\[\]\*@=']+"
     val matchRegexpTemplate           = raw".*(\{\{\s*(?<jsonpath>" + JsonPathReg + raw")\s*\}\}).*"
     val matchContextControl           = (raw"(\{\s*context\s*=\s*(?<jsonpath>" + JsonPathReg + raw")\s*\})").r
     val _grpShape = raw"(?s)(\{\s*context\s*=\s*(?<jsonpath>" + JsonPathReg + raw")\s*dir\s*=\s*(?<dir>\d+)(\s+gap=(?<gap>\d+))?\s*\})"
@@ -91,11 +91,11 @@ object PPTXMerger extends StrictLogging {
         List(Option(slide.getSlideName()), Some(s"#${slide.getSlideNumber()}")).flatten.mkString("/")
     }
 
-    def prettyPrintShape(shape: XSLFShape): String = shape.getShapeName()
+    def prettyPrintShape(shape: Shape[XSLFShape,XSLFTextParagraph]): String = shape.getShapeName()
 
     def prettyPrintAnchor(anchor: Rectangle2D): String = {
         // rounded to 3 decimal places output 
-        s"${anchor.getWidth()}%.3fx${anchor.getHeight()}%.3f @ x=${anchor.getX()}%.3f y=${anchor.getY()}%.3f"        
+        s"${anchor.getWidth()%.3f}x${anchor.getHeight()%.3f} @ x=${anchor.getX()%.3f} y=${anchor.getY()%.3f}"        
     }    
 
     def moveIndexesDown(slideIndexMap: SlideIndexMap, start: Int) : Unit = {
@@ -163,6 +163,7 @@ object PPTXMerger extends StrictLogging {
         for (shapeIndex <- (0 to shapeCount -1)) {
 
             val shape = slide.getShapes().get(shapeIndex)
+            logger.debug(s"⸮ Inspecting Shape[${shape.getShapeName()}]... ")
             shape match {
                 case textShape : TextHolder =>
                     if (hasTemplate(textShape)) {
@@ -178,8 +179,12 @@ object PPTXMerger extends StrictLogging {
                     // slide.removeShape(group)
                 }
                 case table : XSLFTable  if (hasControl(table.getRows().get(0).getCells().get(0)))    => {
-                    logger.debug(s"√ we have a table - ${table.getRows().get(0).getCells().get(0).getText()}")
-                    iterateTable(table, rootJson, contextJson)
+                    logger.debug(s"√ Table with ControlContext found - ${table.getRows().get(0).getCells().get(0).getText()}")
+                    changeTextInTable(table, rootJson, contextJson, tableIteration = true)
+                }
+                case table : XSLFTable  => {
+                    logger.debug(s"√ we have a table - but no control ... rowCount=${table.getRows().size()}")
+                    changeTextInTable(table, rootJson, contextJson, tableIteration = false)
                 }
                 case _ => logger.debug(s"✖ ${f(shape)} is not TextHolder")
             }
@@ -259,6 +264,43 @@ object PPTXMerger extends StrictLogging {
                 changeText(newShape, rootJson, contextJson)
                 return newShape
             }
+            case p: XSLFPictureShape => {
+                logger.debug(s"√ Cloning PictureShape ${p.getShapeName()}")
+                val newShape = parentShape match { 
+                    case Some(g) => g.createPicture(p.getPictureData())
+                    case None => slide.createPicture(p.getPictureData())
+                }
+                newShape.setAnchor(newAnchor)
+                return newShape
+            }
+
+            case t: XSLFTable => {
+                logger.debug(s"√ Cloning Table ${t.getShapeName()}")
+                val newShape = parentShape match { 
+                    case Some(g) => g.createTable()
+                    case None => slide.createTable()
+                }
+                newShape.setAnchor(newAnchor)
+                for (row <- t.getRows().asScala) {
+                    val newRow = newShape.addRow()
+                    for (cell <- row.getCells().asScala) {
+                        val newCell = newRow.addCell()
+                        newCell.setText(cell.getText())
+                        newCell.setStrokeStyle(cell.getStrokeStyle())
+                        newCell.setFillColor(cell.getFillColor())
+                        newCell.setLineColor(cell.getLineColor())
+                        newCell.setLineWidth(cell.getLineWidth())
+                        newCell.setFlipHorizontal(cell.getFlipHorizontal())
+                        newCell.setFlipVertical(cell.getFlipVertical())
+                        newCell.setRotation(cell.getRotation())
+                        newCell.setAnchor(cell.getAnchor())
+                        // TODO - we should determine what type of table iteration to do here
+                        changeTextInTable(t, rootJson, contextJson, tableIteration = false)
+                        
+                    }
+                }
+                return newShape
+            }
             
             case _ => {
                 logger.error(s"! Shape ${prettyPrintShape(sourceShape)} is currently not supported for cloning");
@@ -299,39 +341,49 @@ object PPTXMerger extends StrictLogging {
 
             }
         }
+    
     }
 
-    def iterateTable(table: XSLFTable, rootJson: Json, contextJson: Option[Json]) : Unit = {
-        val firstCellText = table.getRows().get(0).getCells().get(0).getText()
-        // val (a, b, tableContextJsonPath) = for (m <- matchContextControl.findFirstMatchIn(firstCellText)) yield m.group
-        val mm = for (m <- matchContextControl.findFirstMatchIn(firstCellText)) yield m
-        val tableContextJsonPath = mm.get.group(2)
-        val controlString = mm.get.group(0)
-
-        val (jsonNode, _tableContextJsonPath) = nodeAndQuery(tableContextJsonPath, rootJson, contextJson)
-
-
-        val jpResult = JsonPathParser.parse(_tableContextJsonPath).map { jp =>
-            CirceSolver.solve(jp, jsonNode)
-        }
-
-        jpResult.map{ iter =>
-            for ((jsonNode, i) <- iter.zipWithIndex) {
-                logger.debug(s"√ Table node = ${jsonNode.toString()}")
-                RowCloner.cloneRow(table, 1) // including cells
+    def changeTextInTable(table: XSLFTable, rootJson: Json, contextJson: Option[Json], tableIteration: Boolean) : Unit = {
+        if (!tableIteration) {
+            logger.debug(s"No Control String on the table // just change text in table")
+            // for every row and every cell, we will change the text
+            for (row <- table.getRows().asScala) {
                 for ((cell, ci) <- table.getRows().get(table.getRows().size() - 1).getCells().asScala.zipWithIndex) {
-                    changeText(cell, rootJson, Some(jsonNode))
-                    cell.setStrokeStyle(cell.getStrokeStyle())
+                    logger.debug(s"⸮ changing text in Table[${table.getShapeName()}] cell ${ci} - [${cell.getText()}]... ")
+                    changeText(cell, rootJson, None)
                 }
             }
+        } else { 
+            val firstCellText = table.getRows().get(0).getCells().get(0).getText()
+            // val (a, b, tableContextJsonPath) = for (m <- matchContextControl.findFirstMatchIn(firstCellText)) yield m.group
+            val mm = for (m <- matchContextControl.findFirstMatchIn(firstCellText)) yield m
+            val tableContextJsonPath = mm.get.group(2)
+            val controlString = mm.get.group(0)
+
+            val (jsonNode, _tableContextJsonPath) = nodeAndQuery(tableContextJsonPath, rootJson, contextJson)
+
+
+            val jpResult = JsonPathParser.parse(_tableContextJsonPath).map { jp =>
+                CirceSolver.solve(jp, jsonNode)
+            }
+
+            jpResult.map{ iter =>
+                for ((jsonNode, i) <- iter.zipWithIndex) {
+                    logger.debug(s"√ Table node = ${jsonNode.toString()}")
+                    RowCloner.cloneRow(table, 1) // including cells
+                    for ((cell, ci) <- table.getRows().get(table.getRows().size() - 1).getCells().asScala.zipWithIndex) {
+                        changeText(cell, rootJson, Some(jsonNode))
+                        // cell.setStrokeStyle(cell.getStrokeStyle())
+                    }
+                }
+            }
+
+            // now remove the template row
+            table.removeRow(1)
+            // remove the context string
+            table.getRows().get(0).getCells().get(0).setText(firstCellText.replace(controlString, ""))
         }
-
-        // now remove the template row
-        table.removeRow(1)
-        // remove the context string
-        table.getRows().get(0).getCells().get(0).setText(firstCellText.replace(controlString, ""))
-
-
     }
 
     def changeText(textShape: TextHolder, rootJsonNode: Json, contextJsonNode: Option[Json]) : Unit = {
@@ -340,8 +392,26 @@ object PPTXMerger extends StrictLogging {
         // if there is no text, returm
         if (text == null || text.isEmpty()) {
             return
+        } else { 
+            logger.debug(s"Changing text for : Shape[${prettyPrintShape(textShape)}] `${textShape.getText()}`")
         }
-        
+
+        try {
+             
+            val jsonQuery = matchRegexpTemplate.r.findFirstMatchIn(text) match { 
+                case Some(m) => m.group("jsonpath")
+                case None => {
+                    logger.debug(s"No match jsonQuery found for : Shape[${prettyPrintShape(textShape)}] `${textShape.getText()}`")
+                    return
+                }
+            }
+                
+        } catch {
+            case e: scala.MatchError => {
+                logger.debug(s"No match jsonQuery found for : Shape[${prettyPrintShape(textShape)}] `${textShape.getText()}`")
+                return
+            }
+        }
         val matchRegexpTemplate.r(replacingText, jsonQuery) = text
 
         logger.debug(s"√ found = [$replacingText] jsonpath = [$jsonQuery]")
@@ -358,6 +428,11 @@ object PPTXMerger extends StrictLogging {
                 val newText = text.replace(replacingText, {jsonNode.asString.getOrElse(jsonNode.toString())})
                 logger.debug(s"√ dataText = [${jsonNode.toString()}] newText = [$newText]")
                 textShape.setText(newText)
+                textShape.setFillColor(textShape.getFillColor())
+                textShape.setFlipHorizontal(textShape.getFlipHorizontal())
+                textShape.setFlipVertical(textShape.getFlipVertical())
+                textShape.setRotation(textShape.getRotation())
+                textShape.setStrokeStyle(textShape.getStrokeStyle())
             }
         }
     }

@@ -6,6 +6,9 @@
 .~lock*
 mill.*
 assets/standards/*
+*.pptx
+~*.pptx
+__pycache__
 
 # Ignore Gradle project-specific cache directory
 .gradle
@@ -14,3 +17,8 @@ assets/standards/*
 build
 
 .venv/
+
+
+# Added by cargo
+
+/target

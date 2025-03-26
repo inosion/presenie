@@ -1,8 +1,9 @@
 <configuration>
 
     <appender name="CONSOLE" class="ch.qos.logback.core.ConsoleAppender">
+        <!-- X{depth} -->
         <encoder>
-            <pattern>%d{HH:mm:ss.SSS} [%thread] %-5level %logger{36}.%method - %msg%n</pattern>
+            <pattern>%d{HH:mm:ss.SSS} [%thread] %-5level %-64(%logger{-36}.%method{-20}) - %msg%n</pattern>
         </encoder>
     </appender>
 
@@ -11,3 +12,4 @@
     </root>
 
 </configuration>
+

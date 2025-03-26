@@ -248,12 +248,16 @@ object PPTXMerger extends StrictLogging {
                 return newShape
             }
             case a: XSLFAutoShape => {
-                logger.debug(s"√ Cloning AutoShape ${a.getShapeName()}")
+                logger.debug(s"√ Cloning AutoShape ${a.getShapeName()} {${a.getText()}}")
                 val newShape = parentShape match { 
                     case Some(g) => g.createAutoShape()
                     case None => slide.createAutoShape()
                 }
-                newShape.setShapeType(a.getShapeType());
+                // don't set the type if it is null
+
+                if (a.getShapeType() != null) {
+                    newShape.setShapeType(a.getShapeType())
+                }
                 newShape.setAnchor(newAnchor)
                 newShape.setText(a.getText())
                 newShape.setFillColor(a.getFillColor())
@@ -325,9 +329,11 @@ object PPTXMerger extends StrictLogging {
 
                 val (jsonNode, newJp) = nodeAndQuery(jsonPath, rootJson, contextJson)
 
+                logger.debug(s" -> Running the loop on jsonNode = ${jsonNode.toString()}, newJp = ${newJp}")
                 val dataContextOnGroupShape = JsonPathParser.parse(newJp).map { jp =>
                     CirceSolver.solve(jp, jsonNode)
                 }
+
 
                 dataContextOnGroupShape.map{ iter =>
                     for ((jn, i) <- iter.zipWithIndex) {
@@ -396,44 +402,6 @@ object PPTXMerger extends StrictLogging {
         }
     }
 
-
-    // def replaceTextButKeepStyle(textShape: TextHolder, marker: String, text: String): Unit = {
-    //     val textParagraphList = textShape.getTextParagraphs.asScala
-    //     val textAndStylesTable = textParagraphList.map { textParagraph =>
-    //     val textRunList = textParagraph.getTextRuns.asScala
-    //     val textAndStylesParagraph = textRunList.map { textRun =>
-    //             // get Color:
-    //             val solidPaint = textRun.getFontColor.asInstanceOf[PaintStyle.SolidPaint]
-    //             val color = solidPaint.getSolidColor.getColor.getRGB
-
-    //             // save text & styles:
-    //             val textAndStyle = TextAndStyle(textRun.getRawText, textRun.isBold, color, textRun.getFontSize)
-
-    //             // replace text if marker:
-    //             if (textAndStyle.text.contains(marker)) {
-    //                 textAndStyle.text = textAndStyle.text.replace(marker, text)
-    //             }
-
-    //             textAndStyle
-    //         }
-    //         textAndStylesParagraph
-    //     }
-
-    //     // delete text and add new text with correct styles:
-    //     textShape.setText("")
-    //     textAndStylesTable.foreach { textAndStyles =>
-    //         // val textParagraph = textShape.addNewTextParagraph()
-    //         val textParagraph = textShape.
-    //         textAndStyles.foreach { textAndStyle =>
-    //             val newTextRun = textParagraph.addNewTextRun()
-    //             newTextRun.setText(textAndStyle.text)
-    //             newTextRun.setFontColor(new Color(textAndStyle.colorRgb))
-    //             newTextRun.setBold(textAndStyle.isBold)
-    //             newTextRun.setFontSize(textAndStyle.fontSize)
-    //         }
-    //     }
-    // }
-
     case class TextAndStyle(var text: String, isBold: Boolean, colorRgb: Int, fontSize: Double, fontFamily: String = "Arial", isItalic: Boolean = false, isUnderlined: Boolean = false, isStrikethrough: Boolean = false, isSubscript: Boolean = false, isSuperscript: Boolean = false, characterSpacing: Double = 0.0)
 
     def rawChangeTextPreserveStyling2(textShape: TextHolder, newText: String, templateText: String) : Unit = {
@@ -501,33 +469,43 @@ object PPTXMerger extends StrictLogging {
                 
         } catch {
             case e: scala.MatchError => {
+                logger.debug(s"(MatchError) no jsonPath in text --> Shape[${prettyPrintShape(textShape)}] `${textShape.getText()}`")
+                return
+            }
+        }
+
+        try {
+            val matchRegexpTemplate.r(templateText, jsonQuery) = text
+
+            logger.debug(s"(Matched) found RegEx [$templateText] jsonPath=[$jsonQuery]")
+
+            val (jsonNode, jsonPath) = nodeAndQuery(jsonQuery, rootJsonNode, contextJsonNode)
+
+            val matchedText = JsonPathParser.parse(jsonPath).map { jp =>
+                CirceSolver.solve(jp, jsonNode)
+            }
+
+            // join the matcheed entries via a comma
+
+            val newText = matchedText match {
+                case Right(iter) =>
+                    iter.map { jsonNode =>
+                        jsonNode.asString.getOrElse(jsonNode.toString())
+                    }.mkString(", ")
+                case Left(error) =>
+                    logger.error(s"Error parsing JSONPath: $error")
+                    ""
+            }
+            rawChangeTextPreserveStyling2(textShape, newText, templateText)
+                        
+        } catch {
+            case e: scala.MatchError => {
                 logger.debug(s"(MatchError) Ignoring text --> Shape[${prettyPrintShape(textShape)}] `${textShape.getText()}`")
                 return
             }
         }
-        val matchRegexpTemplate.r(templateText, jsonQuery) = text
+        
 
-        logger.debug(s"(Matched) found RegEx [$templateText] jsonPath=[$jsonQuery]")
-
-        val (jsonNode, jsonPath) = nodeAndQuery(jsonQuery, rootJsonNode, contextJsonNode)
-
-        val matchedText = JsonPathParser.parse(jsonPath).map { jp =>
-            CirceSolver.solve(jp, jsonNode)
-        }
-
-        // join the matcheed entries via a comma
-
-        val newText = matchedText match {
-            case Right(iter) =>
-                iter.map { jsonNode =>
-                    jsonNode.asString.getOrElse(jsonNode.toString())
-                }.mkString(", ")
-            case Left(error) =>
-                logger.error(s"Error parsing JSONPath: $error")
-                ""
-        }
-        rawChangeTextPreserveStyling2(textShape, newText, templateText)
-        // replaceTextButKeepStyle(textShape, templateText, newText)
     }
 
     /**
@@ -539,9 +517,15 @@ object PPTXMerger extends StrictLogging {
      */
     def nodeAndQuery(jsonQuery: String, rootJson: Json, contextJson: Option[Json]): (Json, String) = {
         jsonQuery(0) match {
-            case '$' => (rootJson,        jsonQuery)
+            case '$' => { 
+                logger.debug(s"! jsonPath - using root object")
+                (rootJson,        jsonQuery)
+            }
             case '@' => contextJson match {
-                            case Some(jn) => (jn, "$" + jsonQuery.stripPrefix("@"))
+                            case Some(jn) => { 
+                                logger.debug(s"! haveContext - query is @ relative")
+                                (jn, "$" + jsonQuery.stripPrefix("@"))
+                            }
                             case None     => {
                                 val newJsonPath = "$" + jsonQuery.stripPrefix("@")
                                 logger.warn(s"! jsonPath starts is ${jsonQuery} but the context object is empty. Using root object instead (eg: ${newJsonPath})")
@@ -599,7 +583,7 @@ object PPTXMerger extends StrictLogging {
                     val direction = groupShapeMatch.get.group("dir")
                     val gap = if (groupShapeMatch.get.group("gap") != null) groupShapeMatch.get.group("gap").toInt else 0
                     val controlText = groupShapeMatch.get.group(0)
-                    logger.debug(s"√ Match - Shape[${shape.getShapeName()}] control=`${controlText}` jp=`${jsonPath}` dir=${direction} gap=${gap}")
+                    logger.debug(s"√ GroupControl Match - Shape[${shape.getShapeName()}] control=`${controlText}` jp=`${jsonPath}` dir=${direction} gap=${gap}")
                     return Some(GroupShapeControlData(shape, controlText, jsonPath, direction.toInt, gap))
                 } else {
                     logger.debug(s"✖ Direct regex match not found for group shape control")
@@ -610,7 +594,7 @@ object PPTXMerger extends StrictLogging {
                 if (contextControlMatch.isDefined) {
                     val jsonPath = contextControlMatch.get.group("jsonpath")
                     val controlText = contextControlMatch.get.group(0)
-                    logger.debug(s"√ Match - Shape[${shape.getShapeName()}] control=`${controlText}` jp=`${jsonPath}`")
+                    logger.debug(s"√ PageControl Match - Shape[${shape.getShapeName()}] control=`${controlText}` jp=`${jsonPath}`")
                     return Some(PageControlData(shape, controlText, jsonPath))
                 } else {
                     logger.debug(s"✖ Direct regex match not found for context control")

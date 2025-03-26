@@ -266,7 +266,7 @@ object PPTXMerger extends StrictLogging {
                 newShape.setFlipHorizontal(a.getFlipHorizontal())
                 newShape.setFlipVertical(a.getFlipVertical())
                 newShape.setRotation(a.getRotation())
-                changeText(newShape, rootJson, contextJson)
+                changeText(newShape, rootJson, contextJson, Some(a))
                 return newShape
             }
             case p: XSLFPictureShape => {
@@ -356,7 +356,7 @@ object PPTXMerger extends StrictLogging {
             logger.debug(s"No Control String on the table // just change text in table")
             // for every row and every cell, we will change the text
             for (row <- table.getRows().asScala) {
-                for ((cell, ci) <- table.getRows().get(table.getRows().size() - 1).getCells().asScala.zipWithIndex) {
+                for (cell <- row.getCells().asScala) {
                     changeText(cell, rootJson, contextJson)
                 }
             }
@@ -402,21 +402,24 @@ object PPTXMerger extends StrictLogging {
         }
     }
 
-    case class TextAndStyle(var text: String, isBold: Boolean, colorRgb: Int, fontSize: Double, fontFamily: String = "Arial", isItalic: Boolean = false, isUnderlined: Boolean = false, isStrikethrough: Boolean = false, isSubscript: Boolean = false, isSuperscript: Boolean = false, characterSpacing: Double = 0.0)
+    case class TextAndStyle(isBold: Boolean, colorRgb: Int, fontSize: Double, fontFamily: String = "Arial", isItalic: Boolean = false, isUnderlined: Boolean = false, isStrikethrough: Boolean = false, isSubscript: Boolean = false, isSuperscript: Boolean = false, characterSpacing: Double = 0.0)
 
-    def rawChangeTextPreserveStyling2(textShape: TextHolder, newText: String, templateText: String) : Unit = {
+    def rawChangeTextPreserveStyling2(textShape: TextHolder, newText: String, templateText: String, originalShape: Option[TextHolder] = None) : Unit = {
 
         logger.debug(s"Reapplying style text for : Shape[${prettyPrintShape(textShape)}] `${textShape.getText()}` to `${newText}`")
         // get the original style
-        val textRun = textShape.getTextParagraphs().get(0).getTextRuns().get(0)
-
+        val textRun = originalShape match { 
+            case Some(os) => os.getTextParagraphs().get(0).getTextRuns().get(0)
+            case None => textShape.getTextParagraphs().get(0).getTextRuns().get(0)
+        }
+            
 
         // get Color:
         val solidPaint = textRun.getFontColor.asInstanceOf[PaintStyle.SolidPaint]
         val color = solidPaint.getSolidColor.getColor.getRGB
 
         // save text & styles:
-        val textAndStyle = TextAndStyle(textRun.getRawText, textRun.isBold, color, textRun.getFontSize, textRun.getFontFamily, textRun.isItalic, textRun.isUnderlined, textRun.isStrikethrough, textRun.isSubscript, textRun.isSuperscript, textRun.getCharacterSpacing)
+        val textAndStyle = TextAndStyle(textRun.isBold, color, textRun.getFontSize, textRun.getFontFamily, textRun.isItalic, textRun.isUnderlined, textRun.isStrikethrough, textRun.isSubscript, textRun.isSuperscript, textRun.getCharacterSpacing)
 
         val currentText = textShape.getText()
         val aa_newText = currentText.replace(templateText, newText)
@@ -448,7 +451,8 @@ object PPTXMerger extends StrictLogging {
         }
     }
 
-    def changeText(textShape: TextHolder, rootJsonNode: Json, contextJsonNode: Option[Json]) : Unit = {
+    def changeText(textShape: TextHolder, rootJsonNode: Json, contextJsonNode: Option[Json], originalShape: Option[TextHolder] = None) : Unit = {
+        // the originalShape has style we need to clone. 
         val text = textShape.getText()
 
         // if there is no text, returm
@@ -463,6 +467,9 @@ object PPTXMerger extends StrictLogging {
                 case Some(m) => m.group("jsonpath")
                 case None => {
                     logger.debug(s"(None on Regex) Ignoring text --> Shape[${prettyPrintShape(textShape)}] `${textShape.getText()}`")
+                    if (originalShape.isDefined) {
+                        rawChangeTextPreserveStyling2(textShape, text, text, originalShape)
+                    }
                     return
                 }
             }
@@ -496,7 +503,7 @@ object PPTXMerger extends StrictLogging {
                     logger.error(s"Error parsing JSONPath: $error")
                     ""
             }
-            rawChangeTextPreserveStyling2(textShape, newText, templateText)
+            rawChangeTextPreserveStyling2(textShape, newText, templateText, originalShape)
                         
         } catch {
             case e: scala.MatchError => {
